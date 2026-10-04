@@ -19,6 +19,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+          # Used only by this temporary CI service.
+          POSTGRES_PASSWORD: ci-bootstrap-only
+        ports:
+          - "127.0.0.1:5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DB_HOST: "127.0.0.1"
+      DB_PORT: "5432"
+      DB_NAME: postgres
+      DB_USER: kazan_test
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -37,17 +59,61 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip check
 
-      - name: Check Python, Django and home page
+      - name: Create CI test role
+        env:
+          POSTGRES_PASSWORD: ci-bootstrap-only
+        run: |
+          python - <<'PY'
+          import os
+          import secrets
+
+          import psycopg
+          from psycopg import sql
+
+          password = secrets.token_urlsafe(32)
+          print(f"::add-mask::{password}", flush=True)
+          with psycopg.connect(
+              host=os.environ["DB_HOST"],
+              port=os.environ["DB_PORT"],
+              dbname="postgres",
+              user="postgres",
+              password=os.environ["POSTGRES_PASSWORD"],
+              autocommit=True,
+          ) as connection:
+              connection.execute(
+                  sql.SQL(
+                      "CREATE ROLE kazan_test LOGIN NOSUPERUSER NOCREATEROLE "
+                      "CREATEDB NOREPLICATION NOBYPASSRLS PASSWORD {}"
+                  ).format(sql.Literal(password))
+              )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+              environment.write(f"DB_PASSWORD={password}\n")
+          print("CI test role created")
+          PY
+
+      - name: Check Python, Django, database and home page
         run: |
           export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-          python -m compileall -q manage.py config
+          python -m compileall -q manage.py config test_database.py
           python manage.py check
+          python manage.py test test_database --verbosity 2 --noinput
           python - <<'PY'
           import os
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
           import django
           django.setup()
+
+          from django.db import connection
+          with connection.cursor() as cursor:
+              cursor.execute(
+                  "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = %s)",
+                  ["test_kazan_courts"],
+              )
+              if cursor.fetchone()[0]:
+                  raise SystemExit("Test database still exists after the test run")
+          print("Test database removed: OK")
 
           from django.test import Client
           response = Client().get("/", HTTP_HOST="localhost")
