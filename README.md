@@ -2,9 +2,122 @@
 
 Учебный сервис бронирования теннисных кортов. Сейчас доступна только стартовая страница. Требования и архитектура находятся в docs/.
 
-## Окружение и зависимости
+## Запуск через Docker Compose
 
-Нужны Python 3.14.8, PowerShell 7 и запущенный Docker Desktop с Linux containers. Все команды PowerShell выполняются из корня репозитория. Django запускается локально в `.venv`, PostgreSQL 18.6 — в отдельном Docker-контейнере. Compose на этом этапе не используется.
+Нужны PowerShell 7 и запущенный Docker Desktop с Linux containers. Все команды выполняются из корня репозитория. Порт `127.0.0.1:8000` должен быть свободен. Python на Windows для этого режима не требуется: образ `web` содержит Python 3.14.8 и зависимости из `requirements.txt`.
+
+### Секреты в текущем сеансе PowerShell
+
+При первой подготовке задайте три разных пароля через скрытый ввод и создайте временный ключ Django:
+
+```powershell
+$env:POSTGRES_PASSWORD = [pscredential]::new("postgres", (Read-Host "Bootstrap/admin пароль новой Compose-базы" -AsSecureString)).GetNetworkCredential().Password
+$env:DEV_DB_PASSWORD = [pscredential]::new("kazan_dev", (Read-Host "Пароль kazan_dev для Compose" -AsSecureString)).GetNetworkCredential().Password
+$env:TEST_DB_PASSWORD = [pscredential]::new("kazan_test", (Read-Host "Пароль kazan_test для Compose" -AsSecureString)).GetNetworkCredential().Password
+$env:DJANGO_SECRET_KEY = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+```
+
+Сохраните пароли в личном менеджере паролей. В новом сеансе задавайте прежние пароли: изменение переменных не меняет пароли ролей в существующем volume. Compose требует непустые значения. Секреты передаются в окружение контейнеров; не выводите переменные, полный `docker inspect` или развёрнутый `docker compose config`.
+
+### Сборка и запуск
+
+```powershell
+docker compose config --quiet
+if ($LASTEXITCODE -ne 0) { throw "Некорректная конфигурация Compose." }
+docker compose up --build -d --wait --wait-timeout 120
+if ($LASTEXITCODE -ne 0) { throw "Compose не запустился." }
+docker compose ps
+docker compose exec web python manage.py check
+docker compose exec web python -m pip check
+```
+
+Откройте http://127.0.0.1:8000/. Django development server слушает `0.0.0.0:8000` внутри контейнера, порт опубликован только на `127.0.0.1` Windows.
+
+В Compose два сервиса — `web` и `db` — на стандартной сети проекта. `db` использует `postgres:18.6`, не публикует порт на Windows и хранит данные в отдельном volume `kazan-courts_compose_postgres_data`, смонтированном в `/var/lib/postgresql`. Существующие `kazan-courts-postgres` и `kazan-courts-postgres-data` относятся к прежнему локальному режиму.
+
+При первой инициализации пустого volume `docker/postgres/init.sh` создаёт:
+
+- роль `kazan_dev`: LOGIN, без SUPERUSER, CREATEROLE и CREATEDB;
+- роль `kazan_test`: LOGIN и CREATEDB, без SUPERUSER и CREATEROLE;
+- базу `kazan_courts_dev` с владельцем `kazan_dev`;
+- запрет доступа PUBLIC и роли `kazan_test` к development-базе.
+
+Init-скрипт выполняется только на пустом volume. TCP healthcheck проверяет готовность `db`; `web` запускается после состояния healthy. Миграции в development-базе на текущем этапе не запускайте.
+
+Проверьте реальное подключение Django:
+
+```powershell
+docker compose exec web python manage.py shell -c 'from django.db import connection; c = connection.cursor(); c.execute("SELECT current_database(), current_user;"); print(c.fetchone()); c.close(); connection.close()'
+```
+
+Ожидается `('kazan_courts_dev', 'kazan_dev')`. Django получает `DB_HOST=db` и `DB_PORT=5432` для соединения внутри сети Compose.
+
+### Изолированные тесты в Compose
+
+Перед каждым прогоном явно запустите `db` и дождитесь healthy. Пароль тестовой роли передаётся через временную переменную окружения, без значения в аргументах команды:
+
+```powershell
+docker compose up -d --wait --wait-timeout 120 db
+if ($LASTEXITCODE -ne 0) { throw "PostgreSQL db не готов к тестам." }
+$env:DB_PASSWORD = $env:TEST_DB_PASSWORD
+try {
+    docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD web python manage.py test test_database --verbosity 2 --noinput
+    if ($LASTEXITCODE -ne 0) { throw "Тест PostgreSQL не прошёл." }
+}
+finally {
+    Remove-Item Env:DB_PASSWORD
+}
+```
+
+Одноразовый контейнер использует образ `web` и тестовую роль. Django сам создаёт `test_kazan_courts`; существующий тест доказывает имя базы и пользователя, затем Django удаляет базу. Ожидаются один успешный тест и сообщения о создании и удалении test database. При аварийном прерывании база может остаться; выясните причину перед отдельным решением об удалении.
+
+После теста проверьте удаление базы и сохранение запрета CONNECT:
+
+```powershell
+@'
+SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'test_kazan_courts') AS test_database_exists;
+SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'kazan_courts_dev') AS development_database_exists;
+SELECT has_database_privilege('kazan_test', 'kazan_courts_dev', 'CONNECT') AS test_can_connect_to_dev;
+'@ | docker compose exec -T db psql --no-psqlrc --set ON_ERROR_STOP=1 --username postgres --dbname postgres
+```
+
+Ожидается `f`, `t`, `f`. Test database вручную не создавайте.
+
+### Остановка и повторный запуск
+
+```powershell
+docker compose down
+docker compose up -d --wait --wait-timeout 120
+if ($LASTEXITCODE -ne 0) { throw "Повторный запуск Compose не удался." }
+```
+
+Обычный `down` удаляет контейнеры и стандартную сеть, сохраняя named volume. Пароли и созданная development-база остаются прежними. `down --volumes` удаляет данные и не используется для обычной остановки.
+
+Код копируется в образ. После изменения кода выполните `docker compose up --build -d --wait --wait-timeout 120`.
+
+Если первоначальный сеанс PowerShell закрыт, а контейнеры ещё существуют, их локальные параметры можно восстановить без вывода значений:
+
+```powershell
+$dbId = docker ps --all --quiet --filter "label=com.docker.compose.project=kazan-courts" --filter "label=com.docker.compose.service=db"
+$webId = docker ps --all --quiet --filter "label=com.docker.compose.project=kazan-courts" --filter "label=com.docker.compose.service=web"
+if (-not $dbId -or -not $webId) { throw "После down восстановите пароли из личного менеджера паролей." }
+$dbEnvironment = @(docker inspect --format '{{json .Config.Env}}' $dbId | ConvertFrom-Json)
+foreach ($variableName in @("POSTGRES_PASSWORD", "DEV_DB_PASSWORD", "TEST_DB_PASSWORD")) {
+    $entry = $dbEnvironment | Where-Object { $_.StartsWith($variableName + "=") }
+    [Environment]::SetEnvironmentVariable($variableName, $entry.Substring($variableName.Length + 1), "Process")
+}
+$webEnvironment = @(docker inspect --format '{{json .Config.Env}}' $webId | ConvertFrom-Json)
+$env:DJANGO_SECRET_KEY = ($webEnvironment | Where-Object { $_.StartsWith("DJANGO_SECRET_KEY=") }).Substring("DJANGO_SECRET_KEY=".Length)
+Remove-Variable dbEnvironment,webEnvironment,entry
+```
+
+Для поиска контейнеров в этом блоке не требуется повторный ввод секретов: используются labels контейнеров через `docker ps`. После `down` контейнеров уже нет, поэтому сохраните пароли до остановки и закрытия сеанса.
+
+После работы закройте PowerShell или удалите переменные `POSTGRES_PASSWORD`, `DEV_DB_PASSWORD`, `TEST_DB_PASSWORD`, `DJANGO_SECRET_KEY`.
+
+## Запуск в .venv: прежний локальный режим
+
+Для этого режима нужны Python 3.14.8 и PowerShell 7. Django запускается локально в `.venv`, PostgreSQL 18.6 — в существующем контейнере `kazan-courts-postgres`. Его development-база и volume независимы от Compose.
 
 Создайте `.venv`, если её ещё нет, затем установите зависимости:
 
