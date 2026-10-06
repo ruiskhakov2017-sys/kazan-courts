@@ -14,7 +14,12 @@ if not SECRET_KEY:
 DEBUG = True
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
-INSTALLED_APPS = []
+INSTALLED_APPS = [
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
+    "django.contrib.postgres",
+    "bookings.apps.BookingsConfig",
+]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

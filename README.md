@@ -1,6 +1,6 @@
 # KazanCourts
 
-Учебный сервис бронирования теннисных кортов. Сейчас доступна только стартовая страница. Требования и архитектура находятся в docs/.
+Учебный сервис бронирования теннисных кортов. В интерфейсе пока доступна только стартовая страница. В базе предусмотрены корты, клиенты, брони и события их истории. Требования и архитектура находятся в docs/.
 
 ## Запуск через Docker Compose
 
@@ -42,7 +42,7 @@ docker compose exec web python -m pip check
 - базу `kazan_courts_dev` с владельцем `kazan_dev`;
 - запрет доступа PUBLIC и роли `kazan_test` к development-базе.
 
-Init-скрипт выполняется только на пустом volume. TCP healthcheck проверяет готовность `db`; `web` запускается после состояния healthy. Миграции в development-базе на текущем этапе не запускайте.
+Init-скрипт выполняется только на пустом volume. TCP healthcheck проверяет готовность `db`; `web` запускается после состояния healthy. Схема приложения создаётся отдельной командой миграции, запуск контейнеров её автоматически не меняет.
 
 Проверьте реальное подключение Django:
 
@@ -51,6 +51,29 @@ docker compose exec web python manage.py shell -c 'from django.db import connect
 ```
 
 Ожидается `('kazan_courts_dev', 'kazan_dev')`. Django получает `DB_HOST=db` и `DB_PORT=5432` для соединения внутри сети Compose.
+
+### Миграции и демонстрационные данные
+
+Продолжайте только после подтверждения development-базы и пользователя в SQL-проверке выше. Сначала посмотрите план, затем примените миграции и заполните базу:
+
+```powershell
+docker compose exec web python manage.py migrate --plan
+if ($LASTEXITCODE -ne 0) { throw "Не удалось получить план миграций." }
+docker compose exec web python manage.py migrate
+if ($LASTEXITCODE -ne 0) { throw "Миграции не применены." }
+docker compose exec web python manage.py seed_demo_data
+if ($LASTEXITCODE -ne 0) { throw "Демонстрационные данные не загружены." }
+docker compose exec web python manage.py migrate --check
+if ($LASTEXITCODE -ne 0) { throw "Остались неприменённые миграции." }
+docker compose exec web python manage.py makemigrations --check --dry-run
+if ($LASTEXITCODE -ne 0) { throw "Модели и файлы миграций не согласованы." }
+```
+
+`bookings.0001_initial` подключает расширение PostgreSQL `btree_gist` и создаёт модели `Court`, `Customer`, `Booking`, `BookingEvent`; `0002_booking_no_overlap` добавляет запрет пересечений действующих броней одного корта. Django также применяет стандартные миграции `contenttypes` и `auth`: пользователь нужен для ссылок на создателя брони и автора события. Вход сотрудника будет реализован отдельно.
+
+`seed_demo_data` создаёт семь синтетических кортов (три крытых и четыре открытых) и трёх вымышленных клиентов. Команда не создаёт пользователей, брони или события. Повторный запуск распознаёт записи по демонстрационным именам, не создаёт дубликаты и не перезаписывает их изменённые поля. Переименованную запись команда распознать не сможет; при неоднозначном совпадении она завершится с ошибкой без частичного заполнения.
+
+Ограничения БД проверяют обязательные связи, допустимые значения, время окончания после начала, длительность от часа и десятиминутную сетку. Интервалы имеют вид `[начало, конец)`: соседние брони разрешены, отменённые не занимают время. `Booking` хранит текущее состояние, `BookingEvent` — снимки до и после действия. Операции создания, переноса, отмены и архивации вместе с записью истории появятся на этапах 05–06. Проверки будущего времени, календарного месяца и сезона также относятся к будущим операциям.
 
 ### Изолированные тесты в Compose
 
@@ -61,15 +84,15 @@ docker compose up -d --wait --wait-timeout 120 db
 if ($LASTEXITCODE -ne 0) { throw "PostgreSQL db не готов к тестам." }
 $env:DB_PASSWORD = $env:TEST_DB_PASSWORD
 try {
-    docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD web python manage.py test test_database --verbosity 2 --noinput
-    if ($LASTEXITCODE -ne 0) { throw "Тест PostgreSQL не прошёл." }
+    docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD web python manage.py test test_database bookings --verbosity 2 --noinput
+    if ($LASTEXITCODE -ne 0) { throw "Тесты PostgreSQL и приложения не прошли." }
 }
 finally {
     Remove-Item Env:DB_PASSWORD
 }
 ```
 
-Одноразовый контейнер использует образ `web` и тестовую роль. Django сам создаёт `test_kazan_courts`; существующий тест доказывает имя базы и пользователя, затем Django удаляет базу. Ожидаются один успешный тест и сообщения о создании и удалении test database. При аварийном прерывании база может остаться; выясните причину перед отдельным решением об удалении.
+Одноразовый контейнер использует образ `web` и тестовую роль. Django сам создаёт `test_kazan_courts` и применяет в ней миграции, включая `btree_gist`. Тест `test_database.py` доказывает имя базы и пользователя, тесты приложения проверяют модели, ограничения PostgreSQL и демонстрационное заполнение. Затем Django удаляет базу. Ожидаются `OK` и сообщения о создании и удалении test database. При аварийном прерывании база может остаться; выясните причину перед отдельным решением об удалении.
 
 После теста проверьте удаление базы и сохранение запрета CONNECT:
 
@@ -203,12 +226,27 @@ $env:DJANGO_SECRET_KEY = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToS
 
 .\.venv\Scripts\python.exe manage.py check
 .\.venv\Scripts\python.exe manage.py shell -c 'from django.db import connection; c = connection.cursor(); c.execute("SELECT current_database(), current_user;"); print(c.fetchone()); c.close(); connection.close()'
-.\.venv\Scripts\python.exe manage.py runserver --noreload 127.0.0.1:8000
 ```
 
 `check` должен завершиться без ошибок. SQL-проверка реального соединения должна вывести `('kazan_courts_dev', 'kazan_dev')`. В PostgreSQL `current_user` пишется без скобок.
 
-Откройте http://127.0.0.1:8000/ в браузере. Для остановки сервера нажмите Ctrl+C. На текущем этапе нет моделей приложения; миграции в development-базе не запускайте.
+После подтверждения базы и пользователя примените схему и загрузите демонстрационные данные в этой независимой development-базе. Миграции и данные, применённые через Compose, сюда не переносятся:
+
+```powershell
+.\.venv\Scripts\python.exe manage.py migrate --plan
+if ($LASTEXITCODE -ne 0) { throw "Не удалось получить план миграций." }
+.\.venv\Scripts\python.exe manage.py migrate
+if ($LASTEXITCODE -ne 0) { throw "Миграции не применены." }
+.\.venv\Scripts\python.exe manage.py seed_demo_data
+if ($LASTEXITCODE -ne 0) { throw "Демонстрационные данные не загружены." }
+.\.venv\Scripts\python.exe manage.py migrate --check
+if ($LASTEXITCODE -ne 0) { throw "Остались неприменённые миграции." }
+.\.venv\Scripts\python.exe manage.py makemigrations --check --dry-run
+if ($LASTEXITCODE -ne 0) { throw "Модели и файлы миграций не согласованы." }
+.\.venv\Scripts\python.exe manage.py runserver --noreload 127.0.0.1:8000
+```
+
+Откройте http://127.0.0.1:8000/ в браузере. Для остановки сервера нажмите Ctrl+C.
 
 ## Изолированные тесты PostgreSQL
 
@@ -222,10 +260,10 @@ $env:DB_USER = "kazan_test"
 $env:DB_PASSWORD = [pscredential]::new($env:DB_USER, (Read-Host "Пароль kazan_test" -AsSecureString)).GetNetworkCredential().Password
 $env:DJANGO_SECRET_KEY = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
 
-.\.venv\Scripts\python.exe manage.py test test_database --verbosity 2
+.\.venv\Scripts\python.exe manage.py test test_database bookings --verbosity 2 --noinput
 ```
 
-`config/settings.py` задаёт `TEST.NAME = "test_kazan_courts"`. Django сам создаёт эту базу, тест из `test_database.py` проверяет `current_database()` и `current_user`, затем Django удаляет базу. Ожидаются сообщения `Creating test database`, один успешный тест (`Ran 1 test`, `OK`) и `Destroying test database`.
+`config/settings.py` задаёт `TEST.NAME = "test_kazan_courts"`. Django сам создаёт эту базу и применяет миграции. Тест из `test_database.py` проверяет `current_database()` и `current_user`, тесты `bookings` проверяют модели, ограничения и заполнение, затем Django удаляет базу. Ожидаются сообщения `Creating test database`, успешное завершение (`OK`) и `Destroying test database`.
 
 Не создавайте test database вручную и не запускайте тесты под `kazan_dev`. Право `CREATEDB` у `kazan_test` позволяет создавать тестовую базу, а отзыв доступа `PUBLIC` и отсутствие `CONNECT` у тестовой роли защищают development-базу. Подготовка схемы тестовым runner выполняется внутри тестовой базы. После аварийного прерывания тестовая база может остаться: сначала проверьте её имя и владельца перед отдельным решением об удалении.
 

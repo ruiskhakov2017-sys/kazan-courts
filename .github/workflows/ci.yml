@@ -95,9 +95,10 @@ jobs:
       - name: Check Python, Django, database and home page
         run: |
           export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-          python -m compileall -q manage.py config test_database.py
+          python -m compileall -q manage.py config bookings test_database.py
           python manage.py check
-          python manage.py test test_database --verbosity 2 --noinput
+          python manage.py makemigrations --check --dry-run
+          python manage.py test test_database bookings --verbosity 2 --noinput
           python - <<'PY'
           import os
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
