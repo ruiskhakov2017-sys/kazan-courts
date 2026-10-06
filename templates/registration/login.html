@@ -1,0 +1,28 @@
+{% load static %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход · KazanCourts</title>
+  <link rel="stylesheet" href="{% static 'bookings/employee.css' %}">
+</head>
+<body>
+  <main class="login">
+    <h1>KazanCourts</h1>
+    <h2>Вход сотрудника</h2>
+    <form method="post" action="{% url 'login' %}">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      <label for="{{ form.username.id_for_label }}">Логин</label>
+      {{ form.username.errors }}
+      {{ form.username }}
+      <label for="{{ form.password.id_for_label }}">Пароль</label>
+      {{ form.password.errors }}
+      {{ form.password }}
+      <input type="hidden" name="next" value="{{ next }}">
+      <button type="submit">Войти</button>
+    </form>
+  </main>
+</body>
+</html>

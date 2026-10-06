@@ -117,13 +117,17 @@ jobs:
           print("Test database removed: OK")
 
           from django.test import Client
-          response = Client().get("/", HTTP_HOST="localhost")
+          client = Client()
+          response = client.get("/", HTTP_HOST="localhost")
+          if response.status_code != 302 or response.url != "/login/?next=/":
+              raise SystemExit("Anonymous GET / did not redirect to login")
+          response = client.get("/login/", HTTP_HOST="localhost")
 
           if response.status_code != 200:
-              raise SystemExit(f"GET / returned {response.status_code}")
+              raise SystemExit(f"GET /login/ returned {response.status_code}")
           if b"<h1>KazanCourts</h1>" not in response.content:
               raise SystemExit("Expected heading is missing")
 
-          print("GET /: HTTP 200, expected heading found")
+          print("Anonymous GET /: login redirect; GET /login/: HTTP 200")
           PY
           test ! -e db.sqlite3
