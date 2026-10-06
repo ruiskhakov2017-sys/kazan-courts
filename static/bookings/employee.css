@@ -1,0 +1,31 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #173629; background: #f3f6f3; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1060px; margin: 0 auto; padding: 24px 20px 48px; }
+header, header form, #schedule-filter { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+header { justify-content: space-between; }
+h1 { margin-bottom: 4px; }
+h2 { font-size: 1.25rem; margin-top: 0; }
+header p { margin-top: 0; color: #486354; }
+section, .login { background: #fff; border: 1px solid #d6e2d8; border-radius: 8px; padding: 20px; }
+section { margin-top: 20px; }
+label { display: grid; gap: 6px; }
+input, select, button { font: inherit; border: 1px solid #91a798; border-radius: 4px; padding: 9px 12px; }
+button { background: #17663c; color: #fff; cursor: pointer; border-color: #17663c; }
+button:hover { background: #114d2c; }
+button:disabled { opacity: .55; cursor: default; }
+input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px solid #d29b24; outline-offset: 2px; }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; text-align: left; }
+th, td { padding: 10px 12px; border-bottom: 1px solid #e1e9e3; vertical-align: top; }
+th { background: #f2f6f3; }
+.error, .errorlist { color: #a32626; }
+.login { max-width: 420px; margin-top: 64px; }
+.login form { display: grid; gap: 12px; }
+.login input { width: 100%; }
+@media (max-width: 600px) {
+  main { padding: 16px 12px 32px; }
+  section { padding: 14px; }
+  #schedule-filter { align-items: stretch; }
+  #schedule-filter label { width: 100%; }
+}

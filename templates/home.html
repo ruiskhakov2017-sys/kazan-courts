@@ -1,14 +1,63 @@
+{% load static %}
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KazanCourts</title>
+  <link rel="stylesheet" href="{% static 'bookings/employee.css' %}">
+  <script src="{% static 'bookings/employee.js' %}" defer></script>
 </head>
 <body>
-  <main>
-    <h1>KazanCourts</h1>
-    <p>Учебный сервис бронирования теннисных кортов.</p>
+  <main id="employee-app"
+        data-courts-url="{% url 'api:courts' %}"
+        data-customers-url="{% url 'api:customers' %}"
+        data-schedule-url="{% url 'api:schedule' %}"
+        data-login-url="{% url 'login' %}"
+        data-time-zone="{{ time_zone }}">
+    <header>
+      <div><h1>KazanCourts</h1><p>Рабочий экран сотрудника · время по Казани</p></div>
+      <form action="{% url 'logout' %}" method="post">
+        {% csrf_token %}
+        <span>{{ user.username }}</span>
+        <button type="submit">Выйти</button>
+      </form>
+    </header>
+    <p id="data-status" role="status" aria-live="polite">Загрузка кортов и клиентов…</p>
+    <noscript>Для загрузки данных включите JavaScript.</noscript>
+    <section aria-labelledby="schedule-heading">
+      <h2 id="schedule-heading">Расписание действующих броней</h2>
+      <form id="schedule-filter">
+        <label>Корт <select id="court-select" name="court_id" required disabled></select></label>
+        <label>Дата <input id="schedule-date" name="date" type="date" value="{{ initial_date|date:'Y-m-d' }}" required></label>
+        <button id="refresh-schedule" type="submit" disabled>Обновить расписание</button>
+      </form>
+      <p id="schedule-status" role="status" aria-live="polite">Выберите корт и дату.</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Клиент</th></tr></thead>
+          <tbody id="schedule-rows"></tbody>
+        </table>
+      </div>
+    </section>
+    <section aria-labelledby="courts-heading">
+      <h2 id="courts-heading">Корты</h2>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Название</th><th scope="col">Тип</th><th scope="col">Покрытие</th></tr></thead>
+          <tbody id="court-rows"></tbody>
+        </table>
+      </div>
+    </section>
+    <section aria-labelledby="customers-heading">
+      <h2 id="customers-heading">Клиенты</h2>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Имя</th><th scope="col">Телефон</th><th scope="col">Email</th></tr></thead>
+          <tbody id="customer-rows"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 </body>
 </html>

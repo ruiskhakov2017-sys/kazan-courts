@@ -13,6 +13,7 @@ COPY --chown=app:app manage.py test_database.py ./
 COPY --chown=app:app config ./config
 COPY --chown=app:app bookings ./bookings
 COPY --chown=app:app templates ./templates
+COPY --chown=app:app static ./static
 
 USER app
 
