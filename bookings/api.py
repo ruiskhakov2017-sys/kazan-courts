@@ -1,17 +1,20 @@
-"""Small JSON endpoints for employee-only reads."""
+"""Employee JSON endpoints for reads and booking creation."""
 
+import json
 import logging
 from datetime import datetime, time, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
+from django.core.exceptions import RequestDataTooBig
 from django.db import DatabaseError
 from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
 
-from .forms import ScheduleQueryForm
+from .forms import BookingCreateForm, ScheduleQueryForm
 from .models import Booking, Court, Customer
+from .services import BookingCreationError, booking_snapshot, create_booking
 
 logger = logging.getLogger(__name__)
 
@@ -77,3 +80,38 @@ def schedule(request):
         "court_id": court_id, "date": day.isoformat(), "time_zone": settings.TIME_ZONE,
         "bookings": list(rows),
     })
+
+
+@never_cache
+def create(request):
+    try:
+        if not request.user.is_authenticated:
+            return error_response("authentication_required", "Войдите в систему.", 401)
+        if not request.user.is_active or not request.user.is_staff:
+            return error_response("forbidden", "Доступ разрешён только сотруднику.", 403)
+        if request.method != "POST":
+            response = error_response("method_not_allowed", "Разрешено только создание POST.", 405)
+            response["Allow"] = "POST"
+            return response
+        if request.content_type != "application/json":
+            return error_response("invalid_payload", "Передайте JSON с параметрами брони.", 400)
+        def reject_constant(value):
+            raise ValueError("Non-finite JSON number")
+        try:
+            payload = json.loads(request.body, parse_constant=reject_constant)
+        except (ValueError, UnicodeDecodeError, RequestDataTooBig):
+            return error_response("invalid_payload", "Не удалось прочитать JSON запроса.", 400)
+        if not isinstance(payload, dict):
+            return error_response("invalid_payload", "JSON должен содержать объект с параметрами брони.", 400)
+        form = BookingCreateForm(payload)
+        if not form.is_valid():
+            fields = {name: list(errors) for name, errors in form.errors.items()}
+            return error_response("invalid_payload", "Проверьте параметры запроса.", 400, fields=fields)
+        try:
+            booking = create_booking(actor=request.user, **form.cleaned_data)
+        except BookingCreationError as error:
+            return error_response(error.code, str(error), error.status, fields=error.fields)
+        return JsonResponse({"booking": {"id": booking.pk, **booking_snapshot(booking)}}, status=201)
+    except DatabaseError:
+        logger.exception("Booking creation failed")
+        return error_response("database_unavailable", "Не удалось сохранить бронь. Повторите позже.", 503)

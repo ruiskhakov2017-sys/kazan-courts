@@ -8,4 +8,5 @@ urlpatterns = [
     path("courts/", api.courts, name="courts"),
     path("customers/", api.customers, name="customers"),
     path("schedule/", api.schedule, name="schedule"),
+    path("bookings/", api.create, name="create_booking"),
 ]

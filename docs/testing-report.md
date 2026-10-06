@@ -311,3 +311,205 @@ Staging area пустая. По сравнению с началом повто�
 
 Итог локальных проверок этапа 04: PASS. Отдельно остаются создание реального
 учебного сотрудника владельцем проекта и будущий запуск GitHub Actions.
+
+## Этап 05 — создание брони, 6 октября 2026
+
+Ветка `task/05-create-booking` создана от чистой синхронизированной main,
+HEAD основания `13773d9291266ff72138dc12df4547b80655a071`.
+Первый git fetch задержался и был прерван; обычный повтор с ограниченным
+ожиданием завершился успешно. Сеть, TLS и глобальная конфигурация не менялись.
+Commit, staging, push и PR не выполнялись.
+
+### Реализованный объём
+
+POST `/api/bookings/`: четыре поля JSON, явный timezone, сессия активного
+сотрудника и штатный CSRF. Сервер проверяет существующие клиент/корт, телефон,
+будущее время, обе десятиминутные границы, минимум час, календарный месяц и сезон.
+Пользователь отдельно утвердил перенос отсутствующего дня на последний день
+следующего месяца и допустимый конец открытой брони ровно 1 ноября 00:00.
+Операция явно сохраняет Booking и BookingEvent(created) в одном atomic;
+конфликт PostgreSQL распознаётся по SQLSTATE 23P01 и имени ограничения.
+
+### Первая сборка и полный прогон — PASS
+
+```text
+docker compose up --build -d --wait --wait-timeout 120
+Image kazan-courts-web Built
+db healthy; web healthy; 127.0.0.1:8000
+
+python manage.py check
+System check identified no issues (0 silenced).
+
+python -m pip check
+No broken requirements found.
+
+python manage.py migrate --check
+exit code 0
+
+python manage.py makemigrations --check --dry-run
+No changes detected
+```
+
+Перед тестами выполнено `docker compose up -d --wait --wait-timeout 120 db`.
+Тестовый пароль передан только в локальное окружение процесса DB_PASSWORD:
+
+```text
+docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD web python manage.py test test_database bookings --verbosity 2 --noinput
+Found 84 test(s).
+Creating test database for alias 'default' ('test_kazan_courts')...
+Ran 84 tests in 15.190s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+```
+
+Прошли 56 прежних и 28 новых тестов первоначальной реализации этапа 05.
+Подтверждены правила времени/сезона, год/короткий февраль/високосный год,
+сохранение снимка и автора, откат брони при ошибке истории, настоящий отказ
+exclusion constraint после подставленного свободного precheck, API-коды,
+авторизация, CSRF и видимость созданной брони в прежнем GET расписания.
+
+Конкуренция проверена через TransactionTestCase и два HTTP-клиента с независимыми
+соединениями к настоящей test_kazan_courts под kazan_test. Тестовый барьер
+срабатывает после обеих реальных проверок занятости, до любого INSERT.
+Ограниченное ожидание/SQL timeouts и закрытие worker-соединений находятся только
+в тестах. Фактические результаты:
+
+| Сценарий | PostgreSQL backend PID | Результат |
+|---|---|---|
+| Смежные интервалы | 10927, 10928 | 201/201; две брони, два события |
+| Конфликт, повтор 1 | 10930, 10931 | 201/409; одна бронь, одно событие |
+| Конфликт, повтор 2 | 10932, 10933 | 201/409; одна бронь, одно событие |
+| Конфликт, повтор 3 | 10934, 10935 | 201/409; одна бронь, одно событие |
+
+В каждом конфликтном повторе оба precheck вернули свободное время;
+один запрос отклонён PostgreSQL. История проигравшего не сохранена.
+
+### Последующие уточнения и предыдущая финальная сборка — BLOCKED
+
+После успешного прогона уточнены три файла:
+
+- forms.py: формат ISO offset требует минуты 00–59, исключая нормализацию
+  ошибочных значений вроде +02:60;
+- test_booking_rules.py: добавлены эти некорректные offsets в существующий тест;
+- test_create_booking.py: запрос с настоящим JSON null проверяется явно.
+
+Эти уточнения не вошли в образ первого успешного прогона. Попытка пересборки
+окончательного исходного состояния остановилась до выполнения повторных тестов:
+
+```text
+#3 [internal] load metadata for docker.io/library/python:3.14.8-slim
+failed to fetch anonymous token:
+Get "https://auth.docker.io/token?scope=repository%3Alibrary%2Fpython%3Apull&service=registry.docker.io":
+net/http: TLS handshake timeout
+Dockerfile:1 — FROM python:3.14.8-slim
+```
+
+Обходы Docker Hub/TLS, смена образа или тестирование окончательного кода
+через подмену файлов старого контейнера не применялись. На этой попытке повторный
+полный прогон был остановлен, а web оставался на предыдущей проверенной сборке.
+Блокировка закрыта успешной пересборкой и повтором ниже.
+
+### Независимые итоговые проверки
+
+Синтаксис окончательных исходников проверен стандартным Python AST без импорта
+проекта и записи pyc: 33 файла — OK. Проверены 20 PowerShell-блоков README.
+`git diff --check` и отдельная проверка новых файлов на ошибки пробелов прошли.
+
+После тестов и неудачной пересборки PostgreSQL подтвердил:
+
+```text
+test_kazan_courts exists: false
+kazan_courts_dev exists: true
+has_database_privilege('kazan_test', 'kazan_courts_dev', 'CONNECT'): false
+development counts: 7 courts, 3 customers, 0 bookings, 0 events
+```
+
+SHA-256 снимка всех полей предметных таблиц и последовательностей bookings
+в development до и после совпал:
+`1B4EA1E2C8B479C6C09321704D6177E525C949020A39E3B3641D03EA89333AFA`.
+Старый kazan-courts-postgres, его mount, port binding, ID, status и StartedAt
+не изменились. Проверено 51 Git-кандидат на реальные локальные секреты,
+private keys, GitHub/AWS-токены, PostgreSQL URL с паролем и посторонние локальные
+файлы: совпадений нет. Модели, миграции, settings, зависимости, Compose, Dockerfile,
+CI и файлы интерфейса не менялись. CI автоматически обнаружит новые тесты,
+но GitHub Actions для этих изменений ещё не запускался.
+
+На момент предыдущей попытки окончательная версия ещё требовала успешной
+пересборки, полного повтора тестов и проверки изоляции баз. Эти проверки
+выполнены по отдельному запросу пользователя и описаны далее.
+Перенос/отмена/архив, погода и состояние покрытия, полный интерфейс создания
+относятся к следующим этапам. Динамические правила и обязательная история
+обеспечиваются через create_booking; прямой ORM/SQL этот сервис обходит.
+
+### Финальная проверка окончательной версии — PASS
+
+По запросу пользователя 6 октября 2026 повторена обычная сборка без изменения
+кода, образа Python или сетевых/TLS-настроек. Сборка завершилась успешно:
+
+```text
+docker compose up --build -d --wait --wait-timeout 120
+Image kazan-courts-web Built
+db healthy; web healthy
+```
+
+SHA-256 всех 33 Python-файлов внутри собранного web совпали с локальными
+исходниками, включая последние уточнения ISO offsets и тест JSON null.
+Прошли manage.py check, pip check, migrate --check и
+makemigrations --check --dry-run; новых миграций нет, development-миграции
+в этом повторе не применялись.
+
+Перед каждым тестовым прогоном явно выполнено
+`docker compose up -d --wait --wait-timeout 120 db`; db healthy,
+test_kazan_courts отсутствует. Credentials переданы только через окружение
+процесса, без записи в файлы или вывода значений.
+
+```text
+docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD web python manage.py test test_database bookings --verbosity 2 --noinput
+Found 84 test(s).
+Creating test database for alias 'default' ('test_kazan_courts')...
+Ran 84 tests in 71.790s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+
+docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD web python manage.py test bookings.tests.test_booking_concurrency --verbosity 2 --noinput
+Found 2 test(s).
+Creating test database for alias 'default' ('test_kazan_courts')...
+Ran 2 tests in 1.327s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+```
+
+Полный набор включает 56 прежних и 28 новых тестов. Конкурентные сценарии
+прошли в полном наборе и отдельно на той же окончательной сборке:
+
+| Сценарий | PID в полном наборе | PID отдельного повтора | Результат каждого прогона |
+|---|---|---|---|
+| Смежные интервалы | 12948, 12949 | 13353, 13354 | 201/201; две брони, два события |
+| Конфликт, повтор 1 | 12951, 12952 | 13356, 13357 | 201/409; одна бронь, одно событие |
+| Конфликт, повтор 2 | 12953, 12954 | 13358, 13359 | 201/409; одна бронь, одно событие |
+| Конфликт, повтор 3 | 12955, 12956 | 13360, 13361 | 201/409; одна бронь, одно событие |
+
+В каждом конкурентном запросе подтверждены test_kazan_courts / kazan_test
+и независимый backend PID. Оба настоящих precheck завершались свободным
+результатом до INSERT; конфликт отклоняла PostgreSQL, история проигравшего
+не сохранялась.
+
+После отдельного повтора PostgreSQL подтвердил отсутствие test_kazan_courts,
+наличие kazan_courts_dev и запрет CONNECT для kazan_test к development.
+В development осталось 7 кортов, 3 клиента, 0 броней и 0 событий; SHA-256
+полного предметного снимка и последовательностей до/после совпал с
+`1B4EA1E2C8B479C6C09321704D6177E525C949020A39E3B3641D03EA89333AFA`.
+Отдельный kazan-courts-postgres и его mount/port/ID/status/StartedAt не изменились.
+
+Все 51 Git-кандидат совпали с файлами до повтора проверки. Секреты и посторонние
+локальные файлы не найдены; git diff --check и отдельная проверка новых файлов
+прошли. Staging оставался пустым, HEAD/main/origin/main не изменились.
+Дополнительная проверка секретов сначала не запустилась из-за лимита
+автоматической проверки разрешений; после команды пользователя «продолжи»
+обычный повтор прошёл. Обход проверки разрешений не применялся.
+
+После прогона по отдельному запросу пользователя обновлены только этот отчёт
+и описание фактической transaction boundary в docs/design.md. Код сохранён.
+Итог локальных проверок окончательной версии этапа 05: **PASS**.
+Изменения представлены для code review; staging, commit, push и PR
+не выполнялись. GitHub Actions для этих изменений ещё не запускался.
