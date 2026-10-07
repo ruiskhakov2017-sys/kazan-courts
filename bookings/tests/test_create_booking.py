@@ -8,7 +8,7 @@ from django.db import IntegrityError, OperationalError
 from django.test import Client, TestCase
 
 from bookings.models import Booking, BookingEvent, Court, Customer
-from bookings.services import BookingCreationError, booking_snapshot, create_booking
+from bookings.services import BookingOperationError, booking_snapshot, create_booking
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 
@@ -62,12 +62,12 @@ class BookingCreationTests(TestCase):
 
     def test_service_requires_current_employee_permissions(self):
         for actor, status in ((AnonymousUser(), 401), (self.outsider, 403)):
-            with self.subTest(actor=type(actor).__name__), self.assertRaises(BookingCreationError) as error:
+            with self.subTest(actor=type(actor).__name__), self.assertRaises(BookingOperationError) as error:
                 self.create(actor=actor)
             self.assertEqual(error.exception.status, status)
         for changes in ({"is_staff": False}, {"is_staff": True, "is_active": False}):
             get_user_model().objects.filter(pk=self.employee.pk).update(**changes)
-            with self.assertRaises(BookingCreationError) as error:
+            with self.assertRaises(BookingOperationError) as error:
                 self.create()
             self.assertEqual(error.exception.status, 403)
         self.assert_no_creation()
@@ -75,14 +75,14 @@ class BookingCreationTests(TestCase):
     def test_service_rejects_missing_references_and_missing_phone(self):
         for changes, code in (({"customer_id": 999999}, "customer_not_found"),
                               ({"court_id": 999999}, "court_not_found")):
-            with self.subTest(code=code), self.assertRaises(BookingCreationError) as error:
+            with self.subTest(code=code), self.assertRaises(BookingOperationError) as error:
                 self.create(**changes)
             self.assertEqual(error.exception.code, code)
             self.assertEqual(error.exception.status, 404)
         # PostgreSQL already forbids a stored blank phone; exercise the service guard with a transient object.
         self.customer.phone = "   "
         with patch("bookings.services.Customer.objects.get", return_value=self.customer):
-            with self.assertRaises(BookingCreationError) as error:
+            with self.assertRaises(BookingOperationError) as error:
                 self.create()
         self.assertIn("customer_id", error.exception.fields)
         self.assert_no_creation()
@@ -95,7 +95,7 @@ class BookingCreationTests(TestCase):
             {"ends_at": datetime(2026, 8, 2, 12, tzinfo=MOSCOW)},
             {"court_id": self.other.pk, "starts_at": datetime(2026, 11, 1, tzinfo=MOSCOW)},
         ):
-            with self.subTest(changes=changes), self.assertRaises(BookingCreationError) as error:
+            with self.subTest(changes=changes), self.assertRaises(BookingOperationError) as error:
                 self.create(**changes)
             self.assertEqual(error.exception.status, 400)
             self.assert_no_creation()
@@ -106,7 +106,7 @@ class BookingCreationTests(TestCase):
                            (self.start - timedelta(minutes=30), self.start + timedelta(minutes=30)),
                            (self.start + timedelta(minutes=30), self.start + timedelta(minutes=90)),
                            (self.start - timedelta(hours=1), self.start + timedelta(hours=2))):
-            with self.subTest(start=start), self.assertRaises(BookingCreationError) as error:
+            with self.subTest(start=start), self.assertRaises(BookingOperationError) as error:
                 self.create(starts_at=start, ends_at=end)
             self.assertEqual(error.exception.code, "time_conflict")
         self.assertEqual(first.events.count(), 1)
@@ -125,7 +125,7 @@ class BookingCreationTests(TestCase):
     def test_postgresql_conflict_is_mapped_even_after_free_precheck(self):
         self.create()
         with patch("bookings.services._has_active_conflict", return_value=False):
-            with self.assertRaises(BookingCreationError) as error:
+            with self.assertRaises(BookingOperationError) as error:
                 self.create()
         self.assertEqual(error.exception.code, "time_conflict")
         self.assertEqual(error.exception.__cause__.__cause__.sqlstate, "23P01")
@@ -182,10 +182,11 @@ class BookingCreationTests(TestCase):
         self.assertEqual(BookingEvent.objects.count(), 1)
 
     def test_api_requires_employee_and_post_method(self):
-        for method in ("get", "put", "patch", "delete", "head", "options"):
+        self.assertEqual(self.client.get("/api/bookings/").status_code, 400)
+        for method in ("put", "patch", "delete", "head", "options"):
             response = getattr(self.client, method)("/api/bookings/")
             self.assertEqual(response.status_code, 405)
-            self.assertEqual(response["Allow"], "POST")
+            self.assertEqual(response["Allow"], "GET, POST")
         self.client.logout()
         self.assertEqual(self.post().status_code, 401)
         self.client.force_login(self.outsider)
