@@ -330,8 +330,7 @@ def _confirm_surface(*, actor, court_id, forecast):
             raise BookingOperationError("invalid_surface_state", "Подтвердить готовность можно после просушки; обслуживание требует отдельного решения.", 409)
         block = next(block for block in blocks_for_day(forecast, now.astimezone(MOSCOW).date())
                      if block.starts_at <= now < block.ends_at)
-        if block.status == "blocked":
-            raise BookingOperationError("weather_conflict", "Текущий шестичасовой блок запрещён по прогнозу. Подтвердить готовность пока нельзя.", 409)
+        # Physical readiness does not lift the independent weather ban.
         court.surface_status = Court.SurfaceStatus.AVAILABLE
         court.last_inspected_at = now
         court.save(update_fields=["surface_status", "last_inspected_at"])

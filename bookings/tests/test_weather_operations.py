@@ -185,18 +185,38 @@ class WeatherOperationTests(TransactionTestCase):
         self.assertEqual(self.post(ready).status_code, 409)
         self.assertEqual(Booking.objects.count(), 0)
 
-    def test_current_rain_blocks_confirmation_but_future_rain_does_not_open_that_period(self):
+    def test_confirming_surface_keeps_current_and_future_weather_bans_independent(self):
+        booking = self.create()
         services.close_surface(actor=self.employee, court_id=self.court.pk)
-        self.forecast = weather_forecast(self.now, changes={self.now.replace(hour=7): 55})
+        self.forecast = weather_forecast(self.now, changes={self.now.replace(hour=7): 55, self.start: 61})
+        days = (self.now.date().isoformat(), self.start.date().isoformat())
+        blocks_before = {day: self.client.get("/api/weather/", {"court_id": self.court.pk, "date": day}).json()["blocks"]
+                         for day in days}
         before = self.state()
         response = self.post(f"/api/courts/{self.court.pk}/surface/ready/")
-        self.assertEqual((response.status_code, response.json()["error"]["code"]), (409, "weather_conflict"))
-        self.assertEqual(self.state(), before)
-        target = self.now.replace(hour=14)
-        self.forecast = weather_forecast(self.now, changes={target: 61})
-        self.assertEqual(self.post(f"/api/courts/{self.court.pk}/surface/ready/").status_code, 200)
-        with self.assertRaises(services.BookingOperationError):
-            self.create(starts_at=target, ends_at=target + timedelta(hours=1))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["warnings"])
+        self.court.refresh_from_db()
+        self.assertEqual(self.court.surface_status, "available")
+        self.assertEqual(self.court.last_inspected_at, self.now)
+        self.assertEqual(self.state()[1:], before[1:])
+        for day in days:
+            blocks = self.client.get("/api/weather/", {"court_id": self.court.pk, "date": day}).json()["blocks"]
+            self.assertEqual(blocks, blocks_before[day])
+        self.assertEqual(blocks_before[days[0]][1]["status"], "blocked")
+        self.assertEqual(blocks_before[days[1]][2]["status"], "blocked")
+        after_confirmation = self.state()
+        for target in (self.now + timedelta(hours=1), self.start + timedelta(hours=2)):
+            times = {"starts_at": target.isoformat(), "ends_at": (target + timedelta(hours=1)).isoformat()}
+            for path, payload in (("/api/bookings/", {"court_id": self.court.pk, "customer_id": self.customer.pk, **times}),
+                                  (f"/api/bookings/{booking.pk}/reschedule/", times)):
+                with self.subTest(path=path, target=target):
+                    response = self.post(path, payload)
+                    self.assertEqual((response.status_code, response.json()["error"]["code"]), (409, "weather_conflict"))
+                    self.assertEqual(self.state(), after_confirmation)
+        clear_time = self.now.replace(hour=14)
+        self.create(starts_at=clear_time, ends_at=clear_time + timedelta(hours=1))
+        self.assertEqual((Booking.objects.count(), BookingEvent.objects.count()), (2, 2))
 
     def test_unknown_allows_inspected_surface_with_warning_and_cannot_override_maintenance(self):
         services.close_surface(actor=self.employee, court_id=self.court.pk)
@@ -214,9 +234,11 @@ class WeatherOperationTests(TransactionTestCase):
         now = datetime(2026, 7, 1, 21, 30, tzinfo=UTC)
         self.forecast = weather_forecast(self.now, changes={now.astimezone(MOSCOW).replace(hour=1, minute=0): 51})
         with patch("bookings.services.timezone.now", return_value=now):
-            with self.assertRaises(services.BookingOperationError) as error:
-                services.confirm_surface(actor=self.employee, court_id=self.court.pk)
-        self.assertEqual(error.exception.code, "weather_conflict")
+            result = services.confirm_surface(actor=self.employee, court_id=self.court.pk)
+        self.assertTrue(result["warnings"])
+        self.court.refresh_from_db()
+        self.assertEqual(self.court.surface_status, "available")
+        self.assertEqual(self.court.last_inspected_at, now)
 
     def test_weather_view_has_four_periods_is_read_only_and_skips_indoor_transport(self):
         before = self.state()
