@@ -1124,3 +1124,205 @@ Git ignore и LF/CRLF не исправлялись.
 HEAD = main = origin/main = fcacdeca; staging пустой.
 Commit, push, PR, merge и GitHub Actions этапа 08: **NOT_RUN**.
 Локальный итог: **PASS; готово к code review перед commit**.
+
+### Позднейшее завершение этапа 08
+
+Предыдущий блок описывает состояние перед публикацией. После отдельного
+разрешения пользователя выполнены commit `37ac48e5562a65332fbce55666bd5299608568f9`,
+push и [PR №9](https://github.com/ruiskhakov2017-sys/kazan-courts/pull/9).
+PR CI `django-check` — SUCCESS, run
+[37627002685](https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37627002685).
+Merge commit — `6ddf63a50d4a2bd7c18b91d2e611fef1d2ef5347`; post-merge CI — SUCCESS,
+run [37627483849](https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37627483849).
+Локальная main синхронизирована; рабочая ветка 08 удалена безопасно после проверки.
+Эти поздние факты не заменяют исторический результат локального review выше.
+
+## Этап 09 — качество и воспроизводимость, 7 октября 2026
+
+Ветка `task/09-quality` создана от чистой синхронизированной main
+`6ddf63a50d4a2bd7c18b91d2e611fef1d2ef5347`.
+Пользователь утвердил план и исключил Axyro как отдельную тему:
+coupling-исследование и docs/axyro-coupling-note.md здесь не выполняются.
+Код, модели, миграции, тесты, зависимости и CI не менялись.
+Все записи QA — синтетические; реальный Open-Meteo повторно не вызывался.
+
+### Независимый Compose и README с пустой БД — PASS
+
+Создан временный проект `kazan-courts-stage09`: db/web на стандартной сети,
+volume `kazan-courts-stage09_compose_postgres_data`, web только
+`127.0.0.1:8002:8000`, порт db на хост не опубликован. Обычный Compose на 8000
+и прежний standalone PostgreSQL не использовались для проверочных записей.
+Внешний временный override менял только порт web; файл и секреты не добавлялись в Git.
+
+Команды ниже выполнялись с `-p kazan-courts-stage09 -f compose.yaml -f <temporary-port-override>`.
+Пароли случайные, разные, передавались только через окружение процессов/контейнеров.
+Развёрнутый Compose config и Config.Env в вывод не печатались.
+
+```text
+docker compose <QA options> config --quiet                  exit 0
+docker compose <QA options> up --build -d --wait --wait-timeout 120
+db healthy; web started; build PASS
+Python 3.14.8; Django 5.2.17; psycopg 3.3.6; PostgreSQL 18.6
+python manage.py check                                    0 issues
+python -m pip check                                      No broken requirements found
+SELECT current_database(), current_user                  kazan_courts_dev / kazan_dev
+SHOW transaction_isolation                               read committed
+python manage.py migrate --plan                           PASS
+python manage.py migrate                                  PASS, including bookings 0001/0002/0003 and sessions
+python manage.py seed_demo_data                            7 courts / 3 customers
+python manage.py seed_demo_data                            0 added / 0 added
+python manage.py migrate --check                           exit 0
+python manage.py makemigrations --check --dry-run           No changes detected
+python manage.py create_employee                           hidden interactive input; admin created
+```
+
+Миграции применялись только к новой development-базе QA-проекта.
+Bootstrap создал kazan_dev без SUPERUSER/CREATEROLE/CREATEDB;
+kazan_test — без SUPERUSER/CREATEROLE, с CREATEDB. PUBLIC и test role
+не имеют CONNECT к kazan_courts_dev. Проверены владелец и атрибуты ролей.
+Docker Hub/TLS обходов не было.
+
+### Полный DB/API/failure/regression прогон — PASS
+
+Перед запуском db проверена healthy, test_kazan_courts отсутствовала.
+Использованы DB_NAME=postgres, DB_USER=kazan_test, DB_PASSWORD из тестового
+окружения, WEATHER_NETWORK_ENABLED=0. Test database не создавалась вручную.
+
+```text
+docker compose <QA options> run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD -e WEATHER_NETWORK_ENABLED=0 web python manage.py test test_database bookings --verbosity 2 --noinput
+Creating test database for alias 'default' ('test_kazan_courts')...
+Found 145 test(s).
+System check identified no issues (0 silenced).
+Ran 145 tests in 38.621s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+exit 0
+```
+
+Проверены: имя/роль настоящей БД, FK/constraints, миграции и seed, правила
+времени/сезона, вход/допуск/CSRF, чтение без изменений предметных данных,
+создание/перенос/отмена/архив/история, weather policy/adapter/операции.
+Failure-сценарии включают ошибки БД/истории, rollback, один повтор deadlock
+и предел попыток, неизвестный/неверный погодный ответ. Эти сбои подставляются
+тестами; физическое падение сервера БД или диска не имитировалось.
+
+### Отдельный повтор конкуренции — PASS
+
+После полного набора тестовая база отсутствовала. Повтор запущен последовательно,
+с тем же test role и выключенной погодной сетью:
+
+```text
+python manage.py test bookings.tests.test_booking_concurrency bookings.tests.test_booking_actions_concurrency bookings.tests.test_court_weather_concurrency --verbosity 2 --noinput
+Found 11 test(s).
+Ran 11 tests in 9.571s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+exit 0
+```
+
+| Сценарий | Фактическое доказательство повторного прогона |
+|---|---|
+| Два конфликтующих создания, три раунда | PIDs 1956/1957, 1958/1959, 1960/1961; оба precheck свободны; HTTP 201/409; одна бронь/событие |
+| Смежные создания | PIDs 1953/1954; HTTP 201/201; две брони/события |
+| Создание против переноса, три раунда | PIDs 1971/1972, 1973/1974, 1975/1976; HTTP 200/409; один победитель |
+| Действия одной брони и повторные cancel/archive | Последовательная история; повторное действие 200/409 и одно событие |
+| Ожидание Booking | PID 1983; настоящее ожидание Lock; now проверено после ожидания, запись/история сохранены |
+| Закрытие Court первым / создание первым | PID 1985: отказ 409 без записи; PIDs 1987/1988: ожидание writer, 201/200, бронь сохранена |
+| Время после Court wait | PIDs 1997 и 1999; 400 при создании / 409 при переносе, без частичного изменения |
+| Совместимые Court SHARE | PIDs 2002/2001; одновременно удержанные SHARE; HTTP 201/201 |
+
+### Браузер и HTTP на свежем стенде — PASS
+
+Использован `http://localhost:8002/` для изоляции cookies от обычного
+development `127.0.0.1:8000`. Сотрудник создан штатной интерактивной командой
+README, пароль скрыт и не записан в файл. JavaScript warn/error logs пусты.
+
+| Проверка | Результат |
+|---|---|
+| Вход / CSS / JS / данные | Рабочий экран; семь кортов, три клиента, расписание и погодный раздел |
+| Крытая бронь №1 | 8 октября 13:20–14:20 → 15:20–16:20 → cancelled; три события, сотрудник и причины |
+| Интервал 13:20–13:50 | Ошибка минимум 60 минут; записи нет, ввод сохранён |
+| Открытая бронь №2 | 13:20–14:20 сохранена с unknown и предупреждением, без запроса Open-Meteo |
+| Повтор на занятый интервал | Понятный отказ; дополнительной брони нет |
+| Ручная перепроверка | Проверена одна открытая бронь, показан вымышленный телефон; бронь сохранена, событие записано |
+| Покрытие | available → drying → available; неизвестная погода осталась отдельным предупреждением |
+| История после обновления | Новые события прочитаны из PostgreSQL; итог QA: 2 брони, 5 событий |
+| После перезапуска | Сессия и сотрудник сохранены; reload рабочего экрана успешен; выход вернул форму входа |
+
+Дополнительно реальные HTTP-запросы после перезапуска: `/` → 302 на login,
+`/login/` → 200, анонимный `/api/courts/` → 401,
+`/static/bookings/employee.css` и `.js` → 200.
+Снимок только вымышленных данных сохранён вне Git:
+`C:/Users/ruisk/.codex/visualizations/2026/09/29/01a0ed28-6d1b-77d0-b611-f18177682002/kazan-courts-stage09-qa.jpg`.
+Расширенные transport/failure сценарии интерфейса остаются фактическими
+проверками этапа 08; на 09 повторён обычный сценарий, а не каждый старый браузерный сбой.
+
+### Test database, права и сохранение volume — PASS
+
+После обоих прогонов и после down/up SQL подтвердил:
+
+```text
+test_kazan_courts exists: false
+kazan_courts_dev exists: true
+has_database_privilege('kazan_test','kazan_courts_dev','CONNECT'): false
+Actual test-role connection: permission denied for database kazan_courts_dev
+Development identity: kazan_courts_dev / kazan_dev
+WEATHER_NETWORK_ENABLED: false
+```
+
+Обычный `docker compose <QA options> down` выполнен без удаления volume.
+Volume остался; `up -d --wait --wait-timeout 120` снова запустил web/db.
+SHA-256 всех предметных полей и sequences до/после равен:
+`ED08553499B40FE8047941868207F7FE8D93341D54DA45640FD14053B2BB260F`.
+Сохранились 7 кортов, 3 клиента, 2 QA-брони, 5 событий, пароль и права сотрудника.
+Это проверка обычного рестарта, не backup/recovery или crash durability.
+
+### Документы, синтаксис и границы доказательства
+
+README исправлен по текущему коду: миграция 0003, доступные формы, Court SHARE,
+полный набор/повтор конкуренции, явное выключение погоды в тестах,
+восстановление окружения только из основного web/db без one-off контейнеров.
+Проверены синтаксис всех 20 PowerShell-блоков README, AST 43 Python-файлов,
+Node --check employee.js. Python существующей .venv — 3.14.8.
+
+Первый вспомогательный guard ожидал SQLSTATE у ошибки установления подключения,
+который драйвер не предоставил; проверка повторена по фактическому отказу CONNECT.
+Код/settings и пароли ролей не менялись. Первоначальный запуск host .venv
+получил отказ ограниченного окружения; штатный разрешённый запуск прошёл.
+Автоматическая проверка разрешений временно не смогла разрешить create_employee
+из-за лимита сервиса; после команды продолжить штатная проверка прошла, обхода не было.
+Известные глобальный Git ignore и LF/CRLF предупреждения не исправлялись.
+
+Level3-notes содержит объяснения по фактическому коду и ссылки на первичные
+источники. Decision-log сохраняет гипотезы/challenge/решения/trade-off;
+недостающие исходные гипотезы не выдумываются, старые записи имеют исторический контекст.
+Requirements и design проверены на соответствие ядру, не изменены.
+Queue/worker integration: NOT_IMPLEMENTED; production/backup/load: NOT_VERIFIED.
+Mentor review, Homework Defense, завершение ДЗ и статусы roadmap здесь не заявляются.
+
+### Финальная проверка и очистка — PASS
+
+Изменены только README.md, docs/decision-log.md, docs/testing-report.md;
+новый файл — docs/level3-notes.md. Остальные 58 Git-файлов имеют исходные SHA-256.
+Staging пустой, HEAD остался `6ddf63a50d4a2bd7c18b91d2e611fef1d2ef5347`.
+Проверены 62 Git-кандидата: восемь реальных локальных секретов ordinary/QA
+окружений, private keys и типовые токены не найдены; env/БД/временных файлов
+среди кандидатов нет. db.sqlite3 отсутствует; git diff --check прошёл.
+
+Исходная development-база сохранила 7 кортов, 3 клиента, 0 броней, 0 событий.
+Хеш всех предметных полей и sequences совпал с исходным:
+`1B4EA1E2C8B479C6C09321704D6177E525C949020A39E3B3641D03EA89333AFA`.
+Для обычных web/db и старого standalone совпали ID, image, статус, времена
+запуска/остановки, restart count, порты и mounts. Их контейнеры/volume не менялись.
+
+После проверки сохранения volume временный QA-проект остановлен. Удалены только
+его контейнеры, стандартная сеть, disposable volume stage09 и внешний port override.
+Перед удалением проверены имя и Compose-label владельца volume; force/prune
+не использовались. QA-контейнеров и QA-volume больше нет; обычное окружение сохранено.
+Проверочный образ остаётся обычным Docker build cache, в Git QA-артефактов нет.
+
+Локальный итог согласованной части этапа 09: **PASS; готово к review перед commit**.
+Исправления кода не потребовались. Новый GitHub Actions запуск будет проверяться
+после отдельно разрешённой публикации. Axyro и mentor review в этот итог не входят.
+
+Commit, staging, push, PR, merge и новый GitHub Actions этапа 09: **NOT_RUN**.
