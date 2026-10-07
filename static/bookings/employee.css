@@ -20,6 +20,8 @@ table { width: 100%; border-collapse: collapse; text-align: left; }
 th, td { padding: 10px 12px; border-bottom: 1px solid #e1e9e3; vertical-align: top; }
 th { background: #f2f6f3; }
 .error, .errorlist { color: #a32626; }
+.warning { color: #725000; }
+.weather-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
 .login { max-width: 420px; margin-top: 64px; }
 .login form { display: grid; gap: 12px; }
 .login input { width: 100%; }

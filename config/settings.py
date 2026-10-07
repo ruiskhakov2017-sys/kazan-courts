@@ -67,6 +67,12 @@ TIME_ZONE = "Europe/Moscow"
 USE_I18N = True
 USE_TZ = True
 
+# One synthetic Kazan point for the shared outdoor-court policy.
+# Keep live weather off until the user authorizes a real forecast request.
+WEATHER_NETWORK_ENABLED = os.environ.get("WEATHER_NETWORK_ENABLED", "0") == "1"
+WEATHER_LATITUDE = "55.793000"
+WEATHER_LONGITUDE = "49.123000"
+
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "home"
 LOGOUT_REDIRECT_URL = "login"

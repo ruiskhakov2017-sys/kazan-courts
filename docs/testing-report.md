@@ -683,3 +683,315 @@ credentials, private keys, GitHub/AWS-токены, PostgreSQL URL с парол
 Итог локальной окончательной проверки: **PASS**, набор готов к commit.
 На момент этой проверки до commit GitHub Actions этапа 06 ещё не запускался.
 Публикация и CI разрешены пользователем; merge пока не разрешён.
+
+## Этап 07 — погода и готовность открытого покрытия, 7 октября 2026
+
+Рабочая ветка: `task/07-weather`, исходная чистая `main`:
+`5080779d24c91d2c8c53e4c9c8403f13ca920858`. Результаты этого подраздела
+относятся к исходной реализации, позднее зафиксированной commit
+`0ec9efefdea492aadc62d806fff4171633ae5afa`. GitHub Actions для этого commit
+завершился SUCCESS. Последующее уточнение независимости покрытия и погоды
+и его локальные проверки описаны отдельно ниже.
+
+### Окончательная версия и окружение
+
+Python 3.14.8, Django 5.2.17, psycopg 3.3.6, PostgreSQL 18.6.
+Использован существующий Compose с отдельным volume
+`kazan-courts_compose_postgres_data`. Старый контейнер
+`kazan-courts-postgres` и его volume не использовались для тестов.
+Credentials передавались только через локальное окружение процесса.
+
+Сборка окончательной версии обычной командой
+`docker compose up --build -d --wait --wait-timeout 120` успешно завершена
+перед финальным повтором. Docker Hub/TLS не обходились. Во время финального
+повтора код не изменялся. SHA-256 всех 46 Python/template/CSS/JS-файлов внутри
+собранного `web` совпали с локальными исходниками перед тестами.
+
+Предварительный полный прогон: 145 тестов, 47.164 с, OK; отдельный
+конкурентный прогон: 11 тестов, 7.351 с, OK. После него перед окончательной
+сборкой была уточнена обработка числового WMO-кода `61.0`: он распознаётся
+как целый код `61`, а дробный `61.5`, строки и bool остаются unknown.
+Соответствующий тест обновлён. Приведённые ниже финальные результаты получены
+уже после этой правки и повторной сборки.
+
+### Финальный полный прогон — PASS
+
+Прошли `manage.py check` (0 issues), `python -m pip check`
+(No broken requirements found), `makemigrations --check --dry-run`
+(No changes detected), `migrate --check` (exit 0) и
+`node --check static/bookings/employee.js` (exit 0).
+Миграция `bookings.0003_booking_weather` ранее применена к учебной
+development-базе; при финальном повторе development-миграции не запускались.
+
+Перед каждым прогоном явно выполнено:
+
+```text
+docker compose up -d --wait --wait-timeout 60 db
+db: healthy
+test_kazan_courts exists: false
+```
+
+Финальный полный набор:
+
+```text
+docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD -e WEATHER_NETWORK_ENABLED=0 web python manage.py test test_database bookings --verbosity 2 --noinput
+Found 145 test(s).
+Creating test database for alias 'default' ('test_kazan_courts')...
+Ran 145 tests in 24.532s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+exit 0
+```
+
+Набор включает 110 прежних и 35 новых тестов. Проверены:
+
+- точный набор дождя/мороси/ливня: 51, 53, 55, 56, 57, 61, 63, 65, 66, 67,
+  80, 81, 82; четыре шестичасовых периода и полуоткрытые границы;
+- локальное время Казани, переход через полночь, частичное пересечение периода,
+  приоритет известного дождя над неполными данными;
+- unknown для отсутствующих/неподдерживаемых данных и дат за горизонтом,
+  видимое предупреждение, сохранённый флаг перепроверки и история;
+- контракт клиента Open-Meteo с подменённым transport, timeout, ограничение
+  размера ответа, повреждённый JSON, массивы и timestamps; целый код `61.0`;
+- отсутствие transport-вызова при отключённой сети и для закрытых кортов;
+- запрет дождевых периодов и недоступного покрытия при создании/переносе,
+  сохранность исходной брони при отказе;
+- ручная перепроверка будущих действующих броней, контакты затронутых клиентов,
+  отсутствие автоматической отмены/переноса, отдельные события истории;
+- откат всей пачки при ошибке истории и повтор deadlock с одним ранее
+  полученным снимком прогноза;
+- закрытие покрытия, подтверждение готовности и отметка осмотра; в исходной
+  версии проверялся запрет подтверждения при текущем дожде (отменён уточнением
+  ниже), а также сохранение запрета будущего мокрого периода;
+- авторизация сотрудника, CSRF, HTTP-методы, строгий JSON, отсутствие
+  предметных записей после read-only API и неуспешных действий;
+- миграция старых indoor/outdoor-броней без переписывания прежних JSON-событий,
+  PostgreSQL constraint для weather_status;
+- прежние правила времени, сезон, календарный месяц, ограничения PostgreSQL,
+  авторизация, API, отмена/архив, последовательность истории и конкуренция.
+
+### Отдельный повтор конкурентных тестов — PASS
+
+После полного набора PostgreSQL отдельно подтвердил отсутствие
+`test_kazan_courts`. Перед повтором снова явно проверена healthy `db`.
+
+```text
+docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD -e WEATHER_NETWORK_ENABLED=0 web python manage.py test bookings.tests.test_booking_concurrency bookings.tests.test_booking_actions_concurrency bookings.tests.test_court_weather_concurrency --verbosity 2 --noinput
+Found 11 test(s).
+Creating test database for alias 'default' ('test_kazan_courts')...
+Ran 11 tests in 4.550s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+exit 0
+```
+
+Каждое проверяемое конкурентное соединение подтвердило
+`test_kazan_courts / kazan_test`. Ожидание блокировки подтверждалось реальным
+`pg_stat_activity.wait_event_type = Lock`, а не только тестовым барьером.
+
+| Новый сценарий Court | PID полного набора | PID отдельного повтора | Результат |
+|---|---|---|---|
+| Закрытие раньше создания | 2649 | 2794 | Реальный Lock wait; 409, без брони/события |
+| Создание раньше закрытия | 2651/2652 | 2796/2797 | Запись покрытия ждёт; 201/200, бронь сохранена |
+| Время создания после ожидания Court | 2654 | 2799 | 400, без записей |
+| Время переноса после ожидания Court | 2656 | 2801 | 409, исходная бронь/история сохранены |
+| Два одновременных `FOR SHARE` | 2658/2659 | 2803/2804 | 201/201, две брони/события; совместимость чтений |
+
+Шесть прежних конкурентных тестов тоже прошли в обоих финальных прогонах:
+смежные создания, три повтора конфликта создания, три повтора переноса/отмены
+одной брони, три повтора создания/переноса, двойные отмена/архив и проверка
+времени после ожидания Booking lock. Конфликт оставляет одного победителя
+и одно новое событие; повторные действия не дублируют историю.
+
+### Браузерная проверка интерфейса — PASS, синтетический прогноз
+
+Ранее в этой же реализации выполнена ручная браузерная проверка на отдельном
+временном контейнере `kazan-courts-weather-qa`, только на `test_kazan_courts`
+под `kazan_test`. Использованы вымышленные корт, клиент, телефон, сотрудник
+и прогноз. Реальная development-учётная запись не использовалась.
+Интерфейс после этой проверки не изменялся; последующая правка `61.0`
+касалась только parser и его теста.
+
+Подтверждены вход/выход, CSS/JS 200, четыре периода, недоступность погодных
+действий для indoor, ручная перепроверка и показ затронутой брони/контакта,
+закрытие до drying и подтверждение до available. Будущий дождевой период
+после подтверждения оставался blocked. За пределами синтетического
+16-дневного прогноза показаны четыре unknown-периода и предупреждение.
+Ошибок JavaScript в консоли нет. Бронь при перепроверке/закрытии не удалялась.
+
+Скриншот сохранён вне репозитория:
+`C:/Users/ruisk/.codex/visualizations/2026/09/29/01a0ed28-6d1b-77d0-b611-f18177682002/kazan-courts-stage07-weather.jpg`.
+Временный QA-сервер завершён штатно, тестовая база удалена runner,
+QA-контейнер удалён. Его отсутствие повторно проверено после финальных тестов.
+
+### Изоляция и сохранность данных — PASS
+
+После финального полного набора и отдельного повтора подтверждено:
+
+```text
+test_kazan_courts exists: false
+kazan_courts_dev exists: true
+has_database_privilege('kazan_test', 'kazan_courts_dev', 'CONNECT'): false
+development: 7 courts, 3 customers, 0 bookings, 0 events
+bookings.0003_booking_weather applied: true
+```
+
+SHA-256 всех предметных полей Court/Customer/Booking/BookingEvent и
+последовательностей bookings совпал с исходным снимком до этапа 07:
+`1B4EA1E2C8B479C6C09321704D6177E525C949020A39E3B3641D03EA89333AFA`.
+Старый отдельный PostgreSQL-контейнер сохранил ID, status, StartedAt,
+port и volume/mount. Development-данные и его volume не изменились.
+
+Все 43 Python-файла окончательного образа прошли AST parse. Через Django
+повторно подтверждено `kazan_courts_dev / kazan_dev`,
+`WEATHER_NETWORK_ENABLED = false`, анонимный GET `/` — 302 на login,
+GET `/login/` — 200; SQLite-файлов нет.
+Вспомогательный запуск `python -` сначала завершился ImproperlyConfigured,
+так как в проверочной команде не был указан DJANGO_SETTINGS_MODULE.
+После явного задания `config.settings` команда прошла; файлы проекта
+для этого не исправлялись.
+
+### Scope, секреты и оставшиеся границы проверки
+
+Проверка 61 Git-кандидата на значения четырёх реальных локальных Compose
+credentials, private keys, GitHub/AWS-токены, PostgreSQL URL с паролем и
+посторонние локальные файлы прошла. Секреты не выведены и не записаны в Git.
+`git diff --check` и отдельная проверка пробелов восьми новых файлов прошли.
+38 файлов `main` вне scope совпали с исходными SHA-256; зависимости,
+Dockerfile, Compose и CI не изменялись.
+
+На момент исходных локальных тестов реальный Forecast API Open-Meteo:
+**NOT_VERIFIED** — отдельного разрешения на запрос ещё не было.
+В тестовых запусках явно передано `WEATHER_NETWORK_ENABLED=0`;
+тесты включённого клиента используют подменённый transport. Контракт и
+таблица кодов проверены по документации и синтетическим данным, это не
+доказательство реального ответа сервиса.
+
+Commit выполнен: `0ec9efefdea492aadc62d806fff4171633ae5afa`,
+`feat: add weather checks and surface readiness` (23 файла). Push в
+`origin/task/07-weather` выполнен. PR №8 открыт:
+https://github.com/ruiskhakov2017-sys/kazan-courts/pull/8.
+GitHub Actions `django-check`: **SUCCESS**, run `37601265797`:
+https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37601265797.
+Статус job и всех шагов подтверждён метаданными GitHub. Последующая попытка
+прочитать полный лог остановилась на `net/http: TLS handshake timeout`;
+обходов или повторных запросов для получения лога не выполнялось.
+Merge **не выполнен**. На момент первого commit реальный Open-Meteo
+оставался **NOT_VERIFIED**; позднейшая live-проверка описана ниже.
+Этот успешный CI относится к commit `0ec9efe`. Публикация уточнения и её CI
+описаны ниже. Итог исходных локальных финальных тестов: **PASS**.
+
+### Уточнение перед merge — финальный локальный прогон, 7 октября 2026
+
+По решению пользователя физическая готовность покрытия и погодный запрет
+разделены. Убран только отказ подтверждения drying → available при текущем
+blocked; отметка осмотра и погодное предупреждение сохраняются. Погодная
+проверка создания/переноса и ограничения maintenance не изменены.
+README, requirements, design и decision-log приведены к этому решению.
+
+Окончательная версия уточнения успешно собрана обычной командой
+`docker compose up --build -d --wait --wait-timeout 120`; db и web healthy.
+Docker Hub/TLS не обходились. Прошли manage.py check, pip check,
+makemigrations --check --dry-run и migrate --check. Новых миграций нет,
+development-миграции не применялись. AST всех 43 Python-файлов прошёл;
+SHA-256 46 исходников/template/CSS/JS внутри образа совпали с локальными.
+
+Перед прогоном явно проверена healthy db и отсутствие test_kazan_courts.
+
+```text
+docker compose run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD -e WEATHER_NETWORK_ENABLED=0 web python manage.py test test_database bookings --verbosity 2 --noinput
+Found 145 test(s).
+Creating test database for alias 'default' ('test_kazan_courts')...
+Ran 145 tests in 45.377s
+OK
+Destroying test database for alias 'default' ('test_kazan_courts')...
+exit 0
+```
+
+Обновлённый регрессионный тест подтвердил HTTP 200 при подтверждении покрытия
+с текущим blocked, available и время осмотра в Court, погодное предупреждение,
+неизменность текущих/будущих блоков и существующих брони/истории. Создание
+и перенос в текущий и будущий blocked возвращают 409 weather_conflict
+без изменения предметных данных. Создание в clear после осмотра успешно.
+Проверка рядом с UTC-полуночью подтвердила успешный осмотр и предупреждение
+для текущего блока именно по дате Казани. Unknown, maintenance, авторизация,
+CSRF и прежние сценарии также прошли.
+
+Полный набор включает все 11 конкурентных тестов PostgreSQL; они прошли.
+Браузерный прогон для этого уточнения не повторялся: templates/CSS/JS
+не изменены, новый ответ API проверен через Django Client.
+
+После прогона test_kazan_courts отсутствует, kazan_courts_dev существует,
+CONNECT для kazan_test к development по-прежнему false. В development
+7 кортов, 3 клиента, 0 броней и 0 событий. Все предметные поля и
+последовательности сохранили SHA-256 до/после:
+`1B4EA1E2C8B479C6C09321704D6177E525C949020A39E3B3641D03EA89333AFA`.
+Повторное соединение Django: kazan_courts_dev / kazan_dev;
+WEATHER_NETWORK_ENABLED = false. На момент этого локального прогона
+реальный Open-Meteo: **NOT_VERIFIED**, сетевые вызовы не выполнялись.
+
+Scope уточнения: 7 изменённых файлов, без новых файлов; 54 остальных файла
+совпали с исходными хешами. Проверка 61 Git-кандидата на реальные локальные
+credentials, private keys и токены прошла; git diff --check прошёл.
+На момент локальной проверки HEAD и origin/task/07-weather были на 0ec9efe,
+staging пустой; уточнение ещё не было закоммичено или отправлено.
+Итог локального уточнения: **PASS**.
+
+После отдельного разрешения выполнен commit
+`97236ea8c986294cad2ec35b7de7161215b29588`,
+`fix: separate surface readiness from weather bans` (7 файлов), и push
+в `origin/task/07-weather`. PR №8 обновлён; `django-check` для этого commit:
+**SUCCESS**, run `37610190111`:
+https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37610190111.
+Job и все шаги успешно завершены. Финальное повторное чтение PR через GraphQL
+завершилось TLS handshake timeout; повторов не было. При следующей read-only
+проверке перед публикацией отчёта реальной проверки подтверждены OPEN PR №8, HEAD 97236ea,
+основная ветка main и SUCCESS этого CI. Merge не выполнен.
+
+### Один реальный read-only вызов Open-Meteo — PASS
+
+Пользователь отдельно разрешил ровно один реальный вызов. Проверка выполнена
+7 октября 2026 в 14:06:08 МСК на коде commit `97236ea` через настоящий
+`bookings.weather_client.fetch_forecast()` существующего Compose web.
+Погодный компонент внутри контейнера совпал с локальными исходниками.
+
+`WEATHER_NETWORK_ENABLED=1` передано только отдельному Python-процессу
+через docker exec. Стандартная проверка TLS сохранена; timeout 5 секунд.
+Перенаправления отключены в проверочном процессе, чтобы не сделать второй
+запрос. Transport-инструментирование вызвало настоящий urlopen и наблюдало
+ответ; прогноз и тело ответа не подменялись. Повторов не было.
+
+```text
+GET https://api.open-meteo.com/v1/forecast?latitude=55.793000&longitude=49.123000&hourly=weather_code&timezone=Europe%2FMoscow&forecast_days=16
+HTTP 200; Content-Type: application/json; response bytes: 8367
+request_count: 1; database_query_count: 0
+timezone: Europe/Moscow; utc_offset_seconds: 10800
+hourly fields: time, weather_code
+time count: 384; weather_code count: 384; parsed hours: 384
+first hour: 2026-10-07T00:00:00+03:00
+last hour: 2026-10-22T23:00:00+03:00
+received codes: 0, 1, 2, 3, 61, 80
+invalid or missing codes: 0; unavailable_reason: empty
+integration_success: true; process exit code: 0
+```
+
+На том же полученном Forecast чистая политика рассчитала четыре блока
+на 7 октября по Казани:
+
+| Период | Статус | Дождевые коды |
+|---|---|---|
+| 00:00–06:00 | blocked | 61 |
+| 06:00–12:00 | clear | — |
+| 12:00–18:00 | clear | — |
+| 18:00–24:00 | clear | — |
+
+SQL-выполнение было запрещено проверочным guard; ни запросов к БД, ни
+открытых Django database connections не было. После проверки обычный
+процесс контейнера подтвердил WEATHER_NETWORK_ENABLED = false.
+Сеть не включалась в Compose или CI. HEAD остался 97236ea, staging пустой,
+рабочее дерево чистое; SHA-256 всех 61 Git-файла до/после совпали.
+
+Статус реального Open-Meteo: **VERIFIED / PASS для этого единственного
+ответа** — HTTPS, JSON-контракт, parser и четыре блока проверены вместе.
+Остальные коды и failure-сценарии по-прежнему проверяются синтетическими
+тестами. Сетевой вызов при подготовке и публикации этого отчёта не повторяется.

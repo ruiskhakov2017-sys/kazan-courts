@@ -88,7 +88,8 @@ class EmployeeReadAPITests(TestCase):
         rows = self.client.get("/api/schedule/", self.query).json()["bookings"]
         self.assertEqual([row["id"] for row in rows], [previous.pk, late.pk])
         self.assertEqual(datetime.fromisoformat(rows[0]["starts_at"]), previous.starts_at)
-        self.assertEqual(set(rows[0]), {"id", "court_id", "customer_id", "starts_at", "ends_at", "status"})
+        self.assertEqual(set(rows[0]), {"id", "court_id", "customer_id", "starts_at", "ends_at", "status",
+                                      "weather_status", "weather_checked_at"})
 
     def test_day_boundaries_are_half_open_in_moscow_not_utc(self):
         self.booking(datetime(2026, 6, 30, 23, tzinfo=MOSCOW))
