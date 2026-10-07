@@ -72,6 +72,7 @@ class BookingActionTests(TestCase):
                 before = self.domain_state()
                 original = None if operation is create_booking else booking_snapshot(Booking.objects.get(pk=self.booking.pk))
                 states = []
+                attempts = []
                 real_employee = services._employee
                 real_event = BookingEvent.objects.create
                 def observe_employee(actor):
@@ -79,14 +80,15 @@ class BookingActionTests(TestCase):
                     return real_employee(actor)
                 def fail_first_event(**event_values):
                     event = real_event(**event_values)
-                    if len(states) == 1:
+                    attempts.append(event.pk)
+                    if len(attempts) == 1:
                         raise self.database_error(DeadlockDetected("Synthetic deadlock"))
                     return event
                 with patch("bookings.services._employee", side_effect=observe_employee):
                     with patch("bookings.services.BookingEvent.objects.create", side_effect=fail_first_event) as write:
                         result = operation(**values)
                 self.assertEqual(write.call_count, 2)
-                self.assertEqual(states, [before, before])
+                self.assertEqual(states, [before] * (3 if operation in (create_booking, reschedule_booking) else 2))
                 self.assertEqual(Booking.objects.count(), len(before[2]) + (operation is create_booking))
                 self.assertEqual(BookingEvent.objects.count(), len(before[3]) + 1)
                 event = result.events.order_by("pk").last()

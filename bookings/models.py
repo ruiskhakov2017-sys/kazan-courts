@@ -75,6 +75,12 @@ class Customer(models.Model):
 
 
 class Booking(models.Model):
+    class WeatherStatus(models.TextChoices):
+        NOT_APPLICABLE = "not_applicable", "Не требуется"
+        CLEAR = "clear", "Без дождевого запрета"
+        UNKNOWN = "unknown", "Не проверена"
+        BLOCKED = "blocked", "Погодный запрет"
+
     class Status(models.TextChoices):
         ACTIVE = "active", "Действующая"
         CANCELLED = "cancelled", "Отменена"
@@ -88,12 +94,18 @@ class Booking(models.Model):
     archived_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    weather_status = models.CharField(max_length=14, choices=WeatherStatus.choices, default=WeatherStatus.UNKNOWN)
+    weather_checked_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="created_bookings"
     )
 
     class Meta:
         constraints = [
+            models.CheckConstraint(
+                condition=models.Q(weather_status__in=["not_applicable", "clear", "unknown", "blocked"]),
+                name="booking_weather_status_valid",
+            ),
             models.CheckConstraint(
                 condition=models.Q(status__in=["active", "cancelled"]),
                 name="booking_status_valid",
@@ -165,13 +177,14 @@ class BookingEvent(models.Model):
         RESCHEDULED = "rescheduled", "Перенос"
         CANCELLED = "cancelled", "Отмена"
         ARCHIVED = "archived", "Архивация"
+        WEATHER_CHECKED = "weather_checked", "Погода перепроверена"
 
     booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="events")
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="booking_events"
     )
     occurred_at = models.DateTimeField(default=timezone.now)
-    event_type = models.CharField(max_length=11, choices=EventType.choices)
+    event_type = models.CharField(max_length=15, choices=EventType.choices)
     before = models.JSONField(null=True, blank=True)
     after = models.JSONField()
     reason = models.TextField(blank=True)
@@ -180,7 +193,7 @@ class BookingEvent(models.Model):
         ordering = ["occurred_at", "id"]
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(event_type__in=["created", "rescheduled", "cancelled", "archived"]),
+                condition=models.Q(event_type__in=["created", "rescheduled", "cancelled", "archived", "weather_checked"]),
                 name="booking_event_type_valid",
             ),
         ]

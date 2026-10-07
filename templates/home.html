@@ -13,6 +13,10 @@
         data-courts-url="{% url 'api:courts' %}"
         data-customers-url="{% url 'api:customers' %}"
         data-schedule-url="{% url 'api:schedule' %}"
+        data-weather-url="{% url 'api:weather' %}"
+        data-weather-recheck-url="{% url 'api:weather_recheck' %}"
+        data-surface-close-url="{% url 'api:surface_close' 0 %}"
+        data-surface-ready-url="{% url 'api:surface_ready' 0 %}"
         data-login-url="{% url 'login' %}"
         data-time-zone="{{ time_zone }}">
     <header>
@@ -35,10 +39,35 @@
       <p id="schedule-status" role="status" aria-live="polite">Выберите корт и дату.</p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Клиент</th></tr></thead>
+          <thead><tr><th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Клиент</th><th scope="col">Проверка погоды</th></tr></thead>
           <tbody id="schedule-rows"></tbody>
         </table>
       </div>
+    </section>
+    <section aria-labelledby="weather-heading">
+      <h2 id="weather-heading">Погода и открытое покрытие</h2>
+      <p>Прогноз общий для открытых кортов. Периоды и даты показаны по Казани.</p>
+      <p id="weather-status" role="status" aria-live="polite">Выберите корт и дату.</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Начало периода</th><th scope="col">Конец периода</th><th scope="col">Прогноз</th></tr></thead>
+          <tbody id="weather-rows"></tbody>
+        </table>
+      </div>
+      <div class="weather-actions">
+        <button id="close-surface" type="button" disabled>Закрыть выбранный корт на просушку</button>
+        <button id="ready-surface" type="button" disabled>После осмотра подтвердить готовность</button>
+        <button id="recheck-weather" type="button" disabled>Перепроверить будущие открытые брони</button>
+      </div>
+      <p id="weather-action-status" role="status" aria-live="polite">Проверка покрытия выполняется сотрудником лично.</p>
+      <h3>Брони, требующие внимания после перепроверки</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Бронь / корт</th><th scope="col">Время</th><th scope="col">Клиент и телефон</th><th scope="col">Причина</th></tr></thead>
+          <tbody id="affected-bookings"></tbody>
+        </table>
+      </div>
+      <p>Перенос или отмену нужно согласовать с клиентом; перепроверка сохраняет бронь.</p>
     </section>
     <section aria-labelledby="courts-heading">
       <h2 id="courts-heading">Корты</h2>

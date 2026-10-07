@@ -12,12 +12,14 @@ from django.db import DatabaseError
 from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
 
-from .forms import BookingActionForm, BookingCreateForm, BookingRescheduleForm, ScheduleQueryForm
+from .forms import BookingActionForm, BookingCreateForm, BookingRescheduleForm, EmptyActionForm, ScheduleQueryForm
 from .models import Booking, Court, Customer
 from .services import (
     BookingOperationError, archive_booking, booking_snapshot, cancel_booking,
-    create_booking, reschedule_booking,
+    close_surface, confirm_surface, create_booking, recheck_weather, reschedule_booking,
 )
+from .weather_client import fetch_forecast
+from .weather_policy import blocks_for_day, warnings_for_status
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ def schedule(request):
         court_id=court_id, status=Booking.Status.ACTIVE,
         starts_at__lt=end, ends_at__gt=start,
     ).order_by("starts_at", "pk").values(
-        "id", "court_id", "customer_id", "starts_at", "ends_at", "status",
+        "id", "court_id", "customer_id", "starts_at", "ends_at", "status", "weather_status", "weather_checked_at",
     )
     return JsonResponse({
         "court_id": court_id, "date": day.isoformat(), "time_zone": settings.TIME_ZONE,
@@ -108,7 +110,7 @@ def employee_booking(methods):
     return decorate
 
 
-def _write_booking(request, form_class, operation, *, booking_id=None, status=200):
+def _json_form(request, form_class):
     if request.content_type != "application/json":
         raise BookingOperationError("invalid_payload", "Передайте JSON с параметрами действия.")
     def reject_constant(value):
@@ -123,11 +125,16 @@ def _write_booking(request, form_class, operation, *, booking_id=None, status=20
     if not form.is_valid():
         fields = {name: list(errors) for name, errors in form.errors.items()}
         raise BookingOperationError("invalid_payload", "Проверьте параметры запроса.", fields=fields)
-    values = {"actor": request.user, **form.cleaned_data}
+    return form.cleaned_data
+
+
+def _write_booking(request, form_class, operation, *, booking_id=None, status=200):
+    values = {"actor": request.user, **_json_form(request, form_class)}
     if booking_id is not None:
         values["booking_id"] = booking_id
     booking = operation(**values)
-    return JsonResponse({"booking": {"id": booking.pk, **booking_snapshot(booking)}}, status=status)
+    return JsonResponse({"booking": {"id": booking.pk, **booking_snapshot(booking)},
+                         "warnings": warnings_for_status(booking.weather_status)}, status=status)
 
 
 @employee_booking(("GET", "POST"))
@@ -178,3 +185,42 @@ def history(request, booking_id):
         "id", "event_type", "actor_id", "occurred_at", "before", "after", "reason",
     )
     return JsonResponse({"booking_id": booking_id, "events": list(events)})
+
+
+@employee_read
+def weather(request):
+    form = ScheduleQueryForm(request.GET)
+    if not form.is_valid():
+        fields = {name: list(errors) for name, errors in form.errors.items()}
+        return error_response("invalid_query", "Проверьте корт и дату.", 400, fields=fields)
+    court = Court.objects.filter(pk=form.cleaned_data["court_id"]).first()
+    if court is None:
+        return error_response("court_not_found", "Корт не найден.", 404)
+    day = form.cleaned_data["date"]
+    if court.court_type == Court.CourtType.INDOOR:
+        return JsonResponse({"court_id": court.pk, "date": day.isoformat(), "status": "not_applicable",
+                             "blocks": [], "checked_at": None, "warnings": []})
+    forecast = fetch_forecast()
+    blocks = blocks_for_day(forecast, day)
+    return JsonResponse({"court_id": court.pk, "date": day.isoformat(), "status": "applicable",
+                         "time_zone": "Europe/Moscow", "checked_at": forecast.checked_at.isoformat(),
+                         "blocks": [block.as_dict() for block in blocks],
+                         "warnings": warnings_for_status("unknown") if any(block.status == "unknown" for block in blocks) else []})
+
+
+@employee_booking(("POST",))
+def weather_recheck(request):
+    _json_form(request, EmptyActionForm)
+    return JsonResponse(recheck_weather(actor=request.user))
+
+
+@employee_booking(("POST",))
+def surface_close(request, court_id):
+    _json_form(request, EmptyActionForm)
+    return JsonResponse(close_surface(actor=request.user, court_id=court_id))
+
+
+@employee_booking(("POST",))
+def surface_ready(request, court_id):
+    _json_form(request, EmptyActionForm)
+    return JsonResponse(confirm_surface(actor=request.user, court_id=court_id))

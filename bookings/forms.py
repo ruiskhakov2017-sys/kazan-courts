@@ -79,3 +79,11 @@ class BookingActionForm(forms.Form):
 class BookingRescheduleForm(BookingActionForm):
     starts_at = AwareDateTimeField()
     ends_at = AwareDateTimeField()
+
+
+class EmptyActionForm(forms.Form):
+    def clean(self):
+        cleaned = super().clean()
+        if self.data:
+            raise ValidationError("Это действие принимает пустой JSON-объект.")
+        return cleaned
