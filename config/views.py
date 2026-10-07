@@ -1,4 +1,4 @@
-"""The employee's first read-only screen."""
+"""The employee screen for booking operations, history and weather."""
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required

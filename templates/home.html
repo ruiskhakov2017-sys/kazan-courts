@@ -12,13 +12,18 @@
   <main id="employee-app"
         data-courts-url="{% url 'api:courts' %}"
         data-customers-url="{% url 'api:customers' %}"
-        data-schedule-url="{% url 'api:schedule' %}"
+        data-bookings-url="{% url 'api:create_booking' %}"
+        data-reschedule-url="{% url 'api:reschedule_booking' 0 %}"
+        data-cancel-url="{% url 'api:cancel_booking' 0 %}"
+        data-history-url="{% url 'api:booking_history' 0 %}"
         data-weather-url="{% url 'api:weather' %}"
         data-weather-recheck-url="{% url 'api:weather_recheck' %}"
         data-surface-close-url="{% url 'api:surface_close' 0 %}"
         data-surface-ready-url="{% url 'api:surface_ready' 0 %}"
         data-login-url="{% url 'login' %}"
-        data-time-zone="{{ time_zone }}">
+        data-time-zone="{{ time_zone }}"
+        data-employee-id="{{ user.pk }}"
+        data-employee-name="{{ user.username }}">
     <header>
       <div><h1>KazanCourts</h1><p>Рабочий экран сотрудника · время по Казани</p></div>
       <form action="{% url 'logout' %}" method="post">
@@ -29,18 +34,89 @@
     </header>
     <p id="data-status" role="status" aria-live="polite">Загрузка кортов и клиентов…</p>
     <noscript>Для загрузки данных включите JavaScript.</noscript>
+    <section aria-labelledby="create-heading">
+      <h2 id="create-heading">Создать бронь</h2>
+      <p id="booking-time-help">Все даты и время — по Казани. Начало в будущем, шаг 10 минут, минимум час, весь интервал в пределах календарного месяца. Открытые корты работают с мая по октябрь.</p>
+      <form id="create-booking" class="booking-form">
+        <div class="form-grid">
+          <label>Клиент
+            <select id="customer-select" name="customer_id" required disabled aria-describedby="customer-contact create-customer-error">
+              <option value="">Выберите клиента</option>
+            </select>
+            <span id="create-customer-error" class="field-error" data-field-error="customer_id"></span>
+          </label>
+          <label>Корт
+            <select id="court-select" name="court_id" required disabled aria-describedby="selected-court-state create-court-error"></select>
+            <span id="create-court-error" class="field-error" data-field-error="court_id"></span>
+          </label>
+          <label>Начало
+            <input name="starts_at" type="datetime-local" step="600" required disabled aria-describedby="booking-time-help create-start-error">
+            <span id="create-start-error" class="field-error" data-field-error="starts_at"></span>
+          </label>
+          <label>Конец
+            <input name="ends_at" type="datetime-local" step="600" required disabled aria-describedby="booking-time-help create-end-error">
+            <span id="create-end-error" class="field-error" data-field-error="ends_at"></span>
+          </label>
+        </div>
+        <p id="customer-contact">Выберите клиента, чтобы увидеть телефон.</p>
+        <p id="selected-court-state">Состояние покрытия загружается.</p>
+        <p>Погодные периоды ниже относятся к дате расписания. Весь выбранный интервал повторно проверяется при сохранении.</p>
+        <button id="create-submit" type="submit" disabled>Создать бронь</button>
+        <p id="create-status" role="status" aria-live="polite"></p>
+      </form>
+    </section>
     <section aria-labelledby="schedule-heading">
-      <h2 id="schedule-heading">Расписание действующих броней</h2>
+      <h2 id="schedule-heading">Брони выбранного корта</h2>
       <form id="schedule-filter">
-        <label>Корт <select id="court-select" name="court_id" required disabled></select></label>
         <label>Дата <input id="schedule-date" name="date" type="date" value="{{ initial_date|date:'Y-m-d' }}" required></label>
+        <label class="check-label"><input id="show-cancelled" type="checkbox">Показать отменённые</label>
         <button id="refresh-schedule" type="submit" disabled>Обновить расписание</button>
       </form>
       <p id="schedule-status" role="status" aria-live="polite">Выберите корт и дату.</p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Клиент</th><th scope="col">Проверка погоды</th></tr></thead>
+          <thead><tr><th scope="col">Начало</th><th scope="col">Конец</th><th scope="col">Клиент</th><th scope="col">Статус</th><th scope="col">Проверка погоды</th><th scope="col">Действия</th></tr></thead>
           <tbody id="schedule-rows"></tbody>
+        </table>
+      </div>
+      <h3>Свободные промежутки по расписанию</h3>
+      <p>Отменённые брони не занимают время. Эти промежутки показывают только занятость; время, сезон, покрытие и погоду окончательно проверяет сервер при оформлении.</p>
+      <p id="free-status" role="status" aria-live="polite"></p>
+      <ul id="free-intervals"></ul>
+    </section>
+    <section id="booking-detail" aria-labelledby="detail-heading" hidden>
+      <h2 id="detail-heading">Выбранная бронь</h2>
+      <p id="booking-summary"></p>
+      <p id="booking-freshness" role="status" aria-live="polite"></p>
+      <div class="action-grid">
+        <form id="reschedule-booking" class="booking-form">
+          <fieldset id="reschedule-fields" disabled>
+            <legend>Перенести время</legend>
+            <p>Клиент и корт сохраняются. Новое время снова проверяется сервером.</p>
+            <label>Новое начало<input name="starts_at" type="datetime-local" step="600" required aria-describedby="reschedule-start-error"><span id="reschedule-start-error" class="field-error" data-field-error="starts_at"></span></label>
+            <label>Новый конец<input name="ends_at" type="datetime-local" step="600" required aria-describedby="reschedule-end-error"><span id="reschedule-end-error" class="field-error" data-field-error="ends_at"></span></label>
+            <label>Причина, необязательно<input name="reason" type="text" aria-describedby="reschedule-reason-error"><span id="reschedule-reason-error" class="field-error" data-field-error="reason"></span></label>
+            <button type="submit">Сохранить перенос</button>
+          </fieldset>
+          <p id="reschedule-status" role="status" aria-live="polite"></p>
+        </form>
+        <form id="cancel-booking" class="booking-form">
+          <fieldset id="cancel-fields" disabled>
+            <legend>Отменить бронь</legend>
+            <label>Причина, необязательно<input name="reason" type="text" aria-describedby="cancel-reason-error"><span id="cancel-reason-error" class="field-error" data-field-error="reason"></span></label>
+            <label class="check-label"><input name="confirmed" type="checkbox" required>Подтверждаю отмену выбранной брони</label>
+            <p>Отмена освобождает время. Запись и история сохраняются.</p>
+            <button type="submit" class="danger">Отменить бронь</button>
+          </fieldset>
+          <p id="cancel-status" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+      <h3>История брони</h3>
+      <p id="history-status" role="status" aria-live="polite"></p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th scope="col">Когда</th><th scope="col">Действие</th><th scope="col">Сотрудник</th><th scope="col">Причина</th><th scope="col">Изменения</th></tr></thead>
+          <tbody id="history-rows"></tbody>
         </table>
       </div>
     </section>
