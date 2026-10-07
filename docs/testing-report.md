@@ -860,8 +860,9 @@ credentials, private keys, GitHub/AWS-токены, PostgreSQL URL с парол
 38 файлов `main` вне scope совпали с исходными SHA-256; зависимости,
 Dockerfile, Compose и CI не изменялись.
 
-Реальный Forecast API Open-Meteo: **NOT_VERIFIED** — отдельного разрешения
-на запрос нет. В тестовых запусках явно передано `WEATHER_NETWORK_ENABLED=0`;
+На момент исходных локальных тестов реальный Forecast API Open-Meteo:
+**NOT_VERIFIED** — отдельного разрешения на запрос ещё не было.
+В тестовых запусках явно передано `WEATHER_NETWORK_ENABLED=0`;
 тесты включённого клиента используют подменённый transport. Контракт и
 таблица кодов проверены по документации и синтетическим данным, это не
 доказательство реального ответа сервиса.
@@ -875,9 +876,10 @@ https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37601265797.
 Статус job и всех шагов подтверждён метаданными GitHub. Последующая попытка
 прочитать полный лог остановилась на `net/http: TLS handshake timeout`;
 обходов или повторных запросов для получения лога не выполнялось.
-Merge **не выполнен**. Реальный Open-Meteo остаётся **NOT_VERIFIED**.
-Этот успешный CI относится к commit `0ec9efe`, а не к последующим
-незакоммиченным уточнениям. Итог исходных локальных финальных тестов: **PASS**.
+Merge **не выполнен**. На момент первого commit реальный Open-Meteo
+оставался **NOT_VERIFIED**; позднейшая live-проверка описана ниже.
+Этот успешный CI относится к commit `0ec9efe`. Публикация уточнения и её CI
+описаны ниже. Итог исходных локальных финальных тестов: **PASS**.
 
 ### Уточнение перед merge — финальный локальный прогон, 7 октября 2026
 
@@ -925,13 +927,71 @@ CONNECT для kazan_test к development по-прежнему false. В develop
 последовательности сохранили SHA-256 до/после:
 `1B4EA1E2C8B479C6C09321704D6177E525C949020A39E3B3641D03EA89333AFA`.
 Повторное соединение Django: kazan_courts_dev / kazan_dev;
-WEATHER_NETWORK_ENABLED = false. Реальный Open-Meteo: **NOT_VERIFIED**,
-сетевые вызовы не выполнялись.
+WEATHER_NETWORK_ENABLED = false. На момент этого локального прогона
+реальный Open-Meteo: **NOT_VERIFIED**, сетевые вызовы не выполнялись.
 
 Scope уточнения: 7 изменённых файлов, без новых файлов; 54 остальных файла
 совпали с исходными хешами. Проверка 61 Git-кандидата на реальные локальные
 credentials, private keys и токены прошла; git diff --check прошёл.
-HEAD и origin/task/07-weather остались на 0ec9efe; staging пустой.
-Уточнение **не закоммичено и не отправлено**, новый CI для него не запускался.
-PR №8 остаётся открытым; его SUCCESS относится к ранее отправленному commit.
-Merge не выполнен. Итог локального уточнения: **PASS**, остановка перед commit.
+На момент локальной проверки HEAD и origin/task/07-weather были на 0ec9efe,
+staging пустой; уточнение ещё не было закоммичено или отправлено.
+Итог локального уточнения: **PASS**.
+
+После отдельного разрешения выполнен commit
+`97236ea8c986294cad2ec35b7de7161215b29588`,
+`fix: separate surface readiness from weather bans` (7 файлов), и push
+в `origin/task/07-weather`. PR №8 обновлён; `django-check` для этого commit:
+**SUCCESS**, run `37610190111`:
+https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37610190111.
+Job и все шаги успешно завершены. Финальное повторное чтение PR через GraphQL
+завершилось TLS handshake timeout; повторов не было. При следующей read-only
+проверке перед публикацией отчёта реальной проверки подтверждены OPEN PR №8, HEAD 97236ea,
+основная ветка main и SUCCESS этого CI. Merge не выполнен.
+
+### Один реальный read-only вызов Open-Meteo — PASS
+
+Пользователь отдельно разрешил ровно один реальный вызов. Проверка выполнена
+7 октября 2026 в 14:06:08 МСК на коде commit `97236ea` через настоящий
+`bookings.weather_client.fetch_forecast()` существующего Compose web.
+Погодный компонент внутри контейнера совпал с локальными исходниками.
+
+`WEATHER_NETWORK_ENABLED=1` передано только отдельному Python-процессу
+через docker exec. Стандартная проверка TLS сохранена; timeout 5 секунд.
+Перенаправления отключены в проверочном процессе, чтобы не сделать второй
+запрос. Transport-инструментирование вызвало настоящий urlopen и наблюдало
+ответ; прогноз и тело ответа не подменялись. Повторов не было.
+
+```text
+GET https://api.open-meteo.com/v1/forecast?latitude=55.793000&longitude=49.123000&hourly=weather_code&timezone=Europe%2FMoscow&forecast_days=16
+HTTP 200; Content-Type: application/json; response bytes: 8367
+request_count: 1; database_query_count: 0
+timezone: Europe/Moscow; utc_offset_seconds: 10800
+hourly fields: time, weather_code
+time count: 384; weather_code count: 384; parsed hours: 384
+first hour: 2026-10-07T00:00:00+03:00
+last hour: 2026-10-22T23:00:00+03:00
+received codes: 0, 1, 2, 3, 61, 80
+invalid or missing codes: 0; unavailable_reason: empty
+integration_success: true; process exit code: 0
+```
+
+На том же полученном Forecast чистая политика рассчитала четыре блока
+на 7 октября по Казани:
+
+| Период | Статус | Дождевые коды |
+|---|---|---|
+| 00:00–06:00 | blocked | 61 |
+| 06:00–12:00 | clear | — |
+| 12:00–18:00 | clear | — |
+| 18:00–24:00 | clear | — |
+
+SQL-выполнение было запрещено проверочным guard; ни запросов к БД, ни
+открытых Django database connections не было. После проверки обычный
+процесс контейнера подтвердил WEATHER_NETWORK_ENABLED = false.
+Сеть не включалась в Compose или CI. HEAD остался 97236ea, staging пустой,
+рабочее дерево чистое; SHA-256 всех 61 Git-файла до/после совпали.
+
+Статус реального Open-Meteo: **VERIFIED / PASS для этого единственного
+ответа** — HTTPS, JSON-контракт, parser и четыре блока проверены вместе.
+Остальные коды и failure-сценарии по-прежнему проверяются синтетическими
+тестами. Сетевой вызов при подготовке и публикации этого отчёта не повторяется.
