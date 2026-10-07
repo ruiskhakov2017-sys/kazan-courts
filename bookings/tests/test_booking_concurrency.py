@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from queue import Queue
-from threading import Barrier
+from threading import Barrier, local
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -36,8 +36,12 @@ class PostgreSQLBookingConcurrencyTests(TransactionTestCase):
     def run_pair(self, starts):
         barrier = Barrier(2)
         observations = Queue()
+        attempts = local()
         real_check = services._has_active_conflict
         def synchronized_check(**values):
+            if getattr(attempts, "seen", False):
+                return real_check(**values)
+            attempts.seen = True
             occupied = real_check(**values)
             with connection.cursor() as cursor:
                 cursor.execute("SET LOCAL lock_timeout = '5s'")
@@ -47,7 +51,7 @@ class PostgreSQLBookingConcurrencyTests(TransactionTestCase):
             barrier.wait(timeout=10)
             return occupied
         with patch("bookings.services.timezone.now", return_value=self.now):
-            # Both real prechecks finish before either INSERT; production has no barrier or test hook.
+            # Synchronize initial prechecks only; a deadlock retry must recheck without this barrier.
             with patch("bookings.services._has_active_conflict", side_effect=synchronized_check):
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     futures = [executor.submit(self.request, client, start)

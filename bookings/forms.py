@@ -62,3 +62,20 @@ class BookingCreateForm(forms.Form):
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
                 self.add_error(field, "ID должен быть целым числом JSON.")
         return cleaned
+
+
+class BookingActionForm(forms.Form):
+    reason = forms.CharField(required=False)
+
+    def clean(self):
+        cleaned = super().clean()
+        if set(self.data) - set(self.fields):
+            raise ValidationError("Передавайте только поля выбранного действия.")
+        if "reason" in self.data and not isinstance(self.data["reason"], str):
+            self.add_error("reason", "Причина должна быть текстом.")
+        return cleaned
+
+
+class BookingRescheduleForm(BookingActionForm):
+    starts_at = AwareDateTimeField()
+    ends_at = AwareDateTimeField()
