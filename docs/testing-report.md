@@ -1326,3 +1326,43 @@ Staging пустой, HEAD остался `6ddf63a50d4a2bd7c18b91d2e611fef1d2ef5
 после отдельно разрешённой публикации. Axyro и mentor review в этот итог не входят.
 
 Commit, staging, push, PR, merge и новый GitHub Actions этапа 09: **NOT_RUN**.
+
+### Позднейшая публикация и завершение этапа 09 — PASS
+
+Предыдущий блок фиксирует состояние локального review до публикации.
+После отдельных разрешений пользователя 7 октября 2026 выполнены:
+
+- commit `7cc97858bf00f131a8a4ed0ef332e1ec18231823`, сообщение
+  `docs: record stage 09 quality checks and Level 3 notes`;
+- push ветки task/09-quality и [PR №10](https://github.com/ruiskhakov2017-sys/kazan-courts/pull/10)
+  в main: один commit, четыре согласованных документа;
+- PR CI [37639544588](https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37639544588)
+  — SUCCESS, django-check 51s; 145 тестов прошли за 9.629s,
+  подтверждены удаление test database, проверки Django и страницы входа;
+- merge методом Create a merge commit:
+  `141a0025d939834d276358855ae3668eb7271b02`;
+- post-merge CI [37640084285](https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/37640084285)
+  — SUCCESS, django-check и все его шаги успешны;
+- локальная main обновлена через pull --ff-only; HEAD и origin/main
+  совпали с merge commit, рабочее дерево чистое. Проверка merge-base
+  подтвердила полное вхождение commit и рабочей ветки в main;
+- после отдельного разрешения на очистку task/09-quality удалена локально
+  через branch -d и на GitHub через push --delete; fetch --prune выполнен.
+  Force не использовался; после удаления оставалась чистая синхронизированная main.
+
+Согласованное техническое ядро KazanCourts опубликовано и проверено в main.
+[Сценарий приёмочной демонстрации](acceptance-demo.md) подготовлен отдельно;
+самостоятельная защита пользователем, mentor review и обработка возможных
+замечаний ещё не проводились и не объявляются PASS.
+По решению пользователя [работа с Axyro](axyro-coupling-plan.md) вынесена
+в отдельную тему в этом же чате; исследование пока не начато.
+Эта запись и сценарий готовятся в task/09-closeout; их commit и публикация
+требуют отдельного разрешения и не являются уже выполненными действиями.
+
+### Обновление от 9 октября 2026 года — исследование Axyro выполнено
+
+9 октября 2026 года исследование указанного участка AI-аналитика Axyro
+выполнено только чтением исходников на GitHub. Результат —
+[docs/axyro-coupling-note.md](axyro-coupling-note.md).
+[Исходный план](axyro-coupling-plan.md) сохранён как историческая запись.
+Прежние формулировки «не начато» описывают состояние на 7 октября 2026 года.
