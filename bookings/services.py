@@ -359,8 +359,10 @@ def _recheck_weather(*, actor, forecast):
                 continue
             blocks = blocks_for_interval(forecast, booking.starts_at, booking.ends_at)
             before = booking_snapshot(booking)
-            booking.weather_status = interval_status(blocks)
-            booking.weather_checked_at = forecast.checked_at
+            new_status = interval_status(blocks)
+            if not (booking.weather_status == "blocked" and new_status == "unknown"):
+                booking.weather_status = new_status
+                booking.weather_checked_at = forecast.checked_at
             booking.save(update_fields=["weather_status", "weather_checked_at", "updated_at"])
             _record_change(booking, employee, BookingEvent.EventType.WEATHER_CHECKED, before, "Ручная перепроверка прогноза")
             checked_count += 1

@@ -38,6 +38,45 @@ class WeatherOutboxTests(TestCase):
         self.assertNotIn("phone", first.payload)
         self.assertEqual(OutboxMessage.objects.count(), 3)
 
+    def test_unknown_to_clear_updates_without_outbox(self):
+        Booking.objects.filter(pk=self.booking.pk).update(weather_status="unknown")
+        self.assertIsNone(self.transition("clear"))
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.weather_status, "clear")
+        self.assertEqual(self.booking.weather_checked_at, self.now)
+        self.assertIsNone(self.transition("clear"))
+        self.assertFalse(BookingEvent.objects.exists())
+        self.assertFalse(OutboxMessage.objects.exists())
+
+    def test_repeated_blocked_updates_checked_at_without_events_and_rejects_older_results(self):
+        first = self.transition("blocked")
+        later = self.now + timedelta(hours=1)
+        result = apply_weather_transition(booking_id=self.booking.pk, expected_starts_at=self.booking.starts_at,
+                                          expected_ends_at=self.booking.ends_at, status="blocked", checked_at=later)
+        self.assertIsNone(result)
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.weather_checked_at, later)
+        self.assertEqual(self.booking.events.count(), 1)
+        self.assertEqual(OutboxMessage.objects.count(), 1)
+        self.assertEqual(self.booking.events.get().pk, first.booking_event_id)
+        for status in ("blocked", "clear"):
+            self.assertIsNone(apply_weather_transition(booking_id=self.booking.pk, expected_starts_at=self.booking.starts_at,
+                                                       expected_ends_at=self.booking.ends_at, status=status, checked_at=self.now))
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.weather_checked_at, later)
+        self.assertEqual(self.booking.weather_status, "blocked")
+        self.assertEqual(self.booking.events.count(), 1)
+        self.assertEqual(OutboxMessage.objects.count(), 1)
+
+    def test_repeated_clear_refreshes_checked_at_without_events(self):
+        later = self.now + timedelta(hours=1)
+        self.assertIsNone(apply_weather_transition(booking_id=self.booking.pk, expected_starts_at=self.booking.starts_at,
+                                                   expected_ends_at=self.booking.ends_at, status="clear", checked_at=later))
+        self.booking.refresh_from_db()
+        self.assertEqual(self.booking.weather_checked_at, later)
+        self.assertFalse(BookingEvent.objects.exists())
+        self.assertFalse(OutboxMessage.objects.exists())
+
     def test_atomic_rollback_on_history_and_outbox_failure(self):
         for target in ("bookings.weather_transitions.BookingEvent.objects.create", "bookings.weather_transitions.OutboxMessage.objects.create"):
             with self.subTest(target=target), patch(target, side_effect=IntegrityError("synthetic")):

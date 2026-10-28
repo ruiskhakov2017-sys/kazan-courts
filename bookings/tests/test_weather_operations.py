@@ -155,6 +155,17 @@ class WeatherOperationTests(TransactionTestCase):
         self.assertEqual(original_event.event_type, "created")
         self.assertEqual(booking.events.count(), 3)
 
+    def test_unavailable_manual_recheck_preserves_blocked_warning(self):
+        booking = self.create()
+        Booking.objects.filter(pk=booking.pk).update(weather_status="blocked")
+        self.forecast = Forecast.unavailable(self.now, "forecast_unavailable")
+        response = self.post("/api/weather/recheck/")
+        self.assertEqual(response.status_code, 200)
+        booking.refresh_from_db()
+        self.assertEqual(booking.weather_status, "blocked")
+        self.assertEqual(response.json()["affected_bookings"][0]["booking"]["weather_status"], "blocked")
+        self.assertTrue(response.json()["affected_bookings"][0]["warnings"])
+
     def test_history_failure_rolls_back_the_entire_recheck_batch(self):
         self.create()
         self.create(court_id=self.courts[1].pk)

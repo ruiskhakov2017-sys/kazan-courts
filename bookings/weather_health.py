@@ -12,7 +12,7 @@ SAFE_ERROR_CODES = frozenset({"forecast_unavailable", "timeout", "rate_limited",
 
 
 @transaction.atomic
-def record_automatic_result(*, succeeded, attempted_at, error_code=""):
+def record_automatic_result(*, succeeded, attempted_at, error_code="", next_allowed_at=None):
     if not succeeded and error_code not in SAFE_ERROR_CODES:
         raise ValueError("Unsupported weather integration error code")
     status, _ = WeatherIntegrationStatus.objects.get_or_create(pk=1)
@@ -21,6 +21,7 @@ def record_automatic_result(*, succeeded, attempted_at, error_code=""):
     if status.last_attempt_at and attempted_at < status.last_attempt_at:
         return status
     status.last_attempt_at = attempted_at
+    status.next_allowed_at = None if succeeded else next_allowed_at
     if succeeded:
         status.status = WeatherIntegrationStatus.Status.SUCCESS
         status.last_success_at = attempted_at

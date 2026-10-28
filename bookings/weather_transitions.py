@@ -18,8 +18,18 @@ def apply_weather_transition(*, booking_id, expected_starts_at, expected_ends_at
             booking.court.court_type != "outdoor" or booking.starts_at <= timezone.now() or
             (booking.starts_at, booking.ends_at) != (expected_starts_at, expected_ends_at)):
         return None
+    if booking.weather_checked_at and checked_at < booking.weather_checked_at:
+        return None
     previous = booking.weather_status
-    if previous == status or (status == "clear" and previous != "blocked"):
+    if previous == status:
+        if booking.weather_checked_at != checked_at:
+            booking.weather_checked_at = checked_at
+            booking.save(update_fields=["weather_checked_at"])
+        return None
+    if status == "clear" and previous != "blocked":
+        booking.weather_status = status
+        booking.weather_checked_at = checked_at
+        booking.save(update_fields=["weather_status", "weather_checked_at", "updated_at"])
         return None
     before = booking_snapshot(booking)
     last_transition = booking.events.filter(event_type__in=["weather_blocked", "weather_cleared", "weather_checked", "rescheduled"]).order_by("-pk").first()
