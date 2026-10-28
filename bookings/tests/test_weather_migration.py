@@ -11,7 +11,8 @@ class WeatherMigrationTests(TransactionTestCase):
     def test_existing_indoor_and_outdoor_bookings_get_flags_without_rewriting_history(self):
         old = [("bookings", "0002_booking_no_overlap")]
         new = [("bookings", "0003_booking_weather")]
-        self.addCleanup(lambda: MigrationExecutor(connection).migrate(new))
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(
+            MigrationExecutor(connection).loader.graph.leaf_nodes()))
         executor = MigrationExecutor(connection)
         executor.migrate(old)
         apps = executor.loader.project_state(old).apps
@@ -36,3 +37,12 @@ class WeatherMigrationTests(TransactionTestCase):
             self.assertEqual(booking.weather_status, "not_applicable" if kind == "indoor" else "unknown")
             self.assertIsNone(booking.weather_checked_at)
             self.assertEqual(Event.objects.get(pk=event_pk).after, {"legacy": kind})
+        latest = [("bookings", "0005_weather_outbox")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(latest)
+        Event = executor.loader.project_state(latest).apps.get_model("bookings", "BookingEvent")
+        for _, event_pk, kind in rows:
+            event = Event.objects.get(pk=event_pk)
+            self.assertEqual(event.after, {"legacy": kind})
+            self.assertEqual(event.actor_id, actor.pk)
+            self.assertIsNone(event.weather_episode_id)
