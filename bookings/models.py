@@ -20,6 +20,7 @@ class WeatherIntegrationStatus(models.Model):
     status = models.CharField(max_length=11, choices=Status.choices, default=Status.NOT_STARTED)
     last_attempt_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
+    next_allowed_at = models.DateTimeField(null=True, blank=True)
     error_code = models.CharField(max_length=32, blank=True)
     consecutive_failures = models.PositiveIntegerField(default=0)
 
