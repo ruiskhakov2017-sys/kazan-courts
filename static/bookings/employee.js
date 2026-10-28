@@ -415,6 +415,22 @@
         error.message + (error.uncertain ? " Результат неизвестен. Обновите состояние перед повтором." : ""), saved ? "warning" : "error");
     } finally { actionPending = false; updateControls(); }
   }
+  async function loadWeatherHealth() {
+    try {
+      const data = await requestJSON(app.dataset.weatherHealthUrl);
+      const labels = {
+        not_started: "Автоматическая проверка ещё не запускалась.",
+        success: "Автоматическая проверка погоды работает.",
+        error: "Автоматическая проверка погоды столкнулась с технической проблемой.",
+        stale: "Автоматическая проверка погоды давно не обновлялась.",
+      };
+      const message = labels[data.state] || "Состояние автоматической проверки неизвестно.";
+      const last = data.last_success_at ? " Последняя успешная проверка: " + formatTime(data.last_success_at) + "." : " Успешных проверок пока нет.";
+      setStatus(byId("weather-health"), message + last, ["error", "stale"].includes(data.state) ? "warning" : "");
+    } catch {
+      setStatus(byId("weather-health"), "Не удалось загрузить состояние автоматической проверки.", "warning");
+    }
+  }
   async function loadData() {
     try {
       const [courtData, customerData] = await Promise.all([requestJSON(app.dataset.courtsUrl), requestJSON(app.dataset.customersUrl)]);
@@ -472,5 +488,7 @@
   byId("close-surface").addEventListener("click", () => surfaceAction(app.dataset.surfaceCloseUrl, "Корт закрыт на просушку."));
   byId("ready-surface").addEventListener("click", () => surfaceAction(app.dataset.surfaceReadyUrl, "Физическая готовность подтверждена после осмотра."));
   byId("recheck-weather").addEventListener("click", recheckWeather);
+  loadWeatherHealth();
+  window.setInterval(loadWeatherHealth, 60000);
   loadData();
 })();

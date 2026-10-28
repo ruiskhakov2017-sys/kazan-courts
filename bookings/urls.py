@@ -9,6 +9,7 @@ urlpatterns = [
     path("customers/", api.customers, name="customers"),
     path("schedule/", api.schedule, name="schedule"),
     path("weather/", api.weather, name="weather"),
+    path("weather/health/", api.weather_health, name="weather_health"),
     path("weather/recheck/", api.weather_recheck, name="weather_recheck"),
     path("courts/<int:court_id>/surface/close/", api.surface_close, name="surface_close"),
     path("courts/<int:court_id>/surface/ready/", api.surface_ready, name="surface_ready"),

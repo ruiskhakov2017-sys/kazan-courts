@@ -17,6 +17,7 @@
         data-cancel-url="{% url 'api:cancel_booking' 0 %}"
         data-history-url="{% url 'api:booking_history' 0 %}"
         data-weather-url="{% url 'api:weather' %}"
+        data-weather-health-url="{% url 'api:weather_health' %}"
         data-weather-recheck-url="{% url 'api:weather_recheck' %}"
         data-surface-close-url="{% url 'api:surface_close' 0 %}"
         data-surface-ready-url="{% url 'api:surface_ready' 0 %}"
@@ -122,6 +123,7 @@
     </section>
     <section aria-labelledby="weather-heading">
       <h2 id="weather-heading">Погода и открытое покрытие</h2>
+      <p id="weather-health" role="status" aria-live="polite">Загрузка состояния автоматической проверки…</p>
       <p>Прогноз общий для открытых кортов. Периоды и даты показаны по Казани.</p>
       <p id="weather-status" role="status" aria-live="polite">Выберите корт и дату.</p>
       <div class="table-scroll">

@@ -20,6 +20,7 @@ from .services import (
 )
 from .weather_client import fetch_forecast
 from .weather_policy import blocks_for_day, warnings_for_status
+from .weather_health import integration_health
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,11 @@ def history(request, booking_id):
         "id", "event_type", "actor_id", "occurred_at", "before", "after", "reason",
     )
     return JsonResponse({"booking_id": booking_id, "events": list(events)})
+
+
+@employee_read
+def weather_health(request):
+    return JsonResponse(integration_health())
 
 
 @employee_read
