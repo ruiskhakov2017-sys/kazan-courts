@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import uuid
 
 from django.conf import settings
 from django.contrib.postgres.constraints import ExclusionConstraint
@@ -199,13 +200,18 @@ class BookingEvent(models.Model):
         CANCELLED = "cancelled", "Отмена"
         ARCHIVED = "archived", "Архивация"
         WEATHER_CHECKED = "weather_checked", "Погода перепроверена"
+        WEATHER_BLOCKED = "weather_blocked", "Погодный запрет"
+        WEATHER_CLEARED = "weather_cleared", "Погодный запрет снят"
+        CONTACT_NO_ANSWER = "contact_no_answer", "Не дозвонились"
 
     booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="events")
     actor = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="booking_events"
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="booking_events", null=True, blank=True
     )
+    weather_episode = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True,
+                                        related_name="episode_events")
     occurred_at = models.DateTimeField(default=timezone.now)
-    event_type = models.CharField(max_length=15, choices=EventType.choices)
+    event_type = models.CharField(max_length=20, choices=EventType.choices)
     before = models.JSONField(null=True, blank=True)
     after = models.JSONField()
     reason = models.TextField(blank=True)
@@ -214,7 +220,45 @@ class BookingEvent(models.Model):
         ordering = ["occurred_at", "id"]
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(event_type__in=["created", "rescheduled", "cancelled", "archived", "weather_checked"]),
+                condition=models.Q(event_type__in=["created", "rescheduled", "cancelled", "archived", "weather_checked",
+                                                   "weather_blocked", "weather_cleared", "contact_no_answer"]),
                 name="booking_event_type_valid",
             ),
+            models.CheckConstraint(
+                condition=(models.Q(event_type__in=["weather_blocked", "weather_cleared"], actor__isnull=True) |
+                           models.Q(event_type__in=["created", "rescheduled", "cancelled", "archived", "weather_checked",
+                                                   "contact_no_answer"], actor__isnull=False)),
+                name="booking_event_actor_by_type",
+            ),
         ]
+
+
+class OutboxMessage(models.Model):
+    event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    booking_event = models.OneToOneField(BookingEvent, on_delete=models.PROTECT, related_name="outbox_message")
+    event_type = models.CharField(max_length=32)
+    schema_version = models.PositiveSmallIntegerField(default=1)
+    payload = models.JSONField()
+    created_at = models.DateTimeField(default=timezone.now)
+    published_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=32, blank=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(event_type__in=["booking.weather_blocked", "booking.weather_cleared"]),
+                                              name="outbox_weather_type_valid")]
+
+
+class SimulatedNotification(models.Model):
+    class Result(models.TextChoices):
+        SIMULATED = "simulated", "Имитация"
+        SUPPRESSED = "suppressed", "Подавлено"
+
+    event = models.OneToOneField(OutboxMessage, on_delete=models.PROTECT, related_name="notification")
+    result = models.CharField(max_length=10, choices=Result.choices)
+    text = models.TextField(blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(result__in=["simulated", "suppressed"]),
+                                              name="simulated_notification_result_valid")]
