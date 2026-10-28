@@ -9,6 +9,27 @@ from django.db.models.lookups import Exact
 from django.utils import timezone
 
 
+class WeatherIntegrationStatus(models.Model):
+    class Status(models.TextChoices):
+        NOT_STARTED = "not_started", "Не запускалась"
+        SUCCESS = "success", "Успешно"
+        ERROR = "error", "Ошибка"
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    status = models.CharField(max_length=11, choices=Status.choices, default=Status.NOT_STARTED)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    error_code = models.CharField(max_length=32, blank=True)
+    consecutive_failures = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(id=1), name="weather_integration_singleton"),
+            models.CheckConstraint(condition=models.Q(status__in=["not_started", "success", "error"]),
+                                   name="weather_integration_status_valid"),
+        ]
+
+
 class Court(models.Model):
     class CourtType(models.TextChoices):
         INDOOR = "indoor", "Крытый"
