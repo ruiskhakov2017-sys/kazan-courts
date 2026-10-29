@@ -73,6 +73,7 @@ class AutomaticForecastResult:
     forecast: Forecast | None
     error_code: str = ""
     next_allowed_at: datetime | None = None
+    retryable: bool = False
 
 
 def _retry_after(value, now):
@@ -131,13 +132,13 @@ def fetch_automatic_forecast():
             if not retryable:
                 return AutomaticForecastResult(None, code)
             if attempt == 2:
-                return AutomaticForecastResult(None, code, retry_at)
+                return AutomaticForecastResult(None, code, retry_at, retryable=True)
             delay = (1, 3)[attempt]
             if retry_at and retry_at > now + timedelta(seconds=delay):
-                return AutomaticForecastResult(None, code, retry_at)
+                return AutomaticForecastResult(None, code, retry_at, retryable=True)
         except (URLError, OSError):
             if attempt == 2:
-                return AutomaticForecastResult(None, "forecast_unavailable")
+                return AutomaticForecastResult(None, "forecast_unavailable", retryable=True)
             delay = (1, 3)[attempt]
         except (ValueError, UnicodeError):
             return AutomaticForecastResult(None, "invalid_response")

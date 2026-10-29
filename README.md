@@ -31,9 +31,13 @@ docker compose exec web python manage.py check
 docker compose exec web python -m pip check
 ```
 
-После миграций и создания сотрудника откройте http://127.0.0.1:8000/: анонимный запрос перенаправляется на `/login/`. Django development server слушает `0.0.0.0:8000` внутри контейнера, порт опубликован только на `127.0.0.1` Windows.
+После миграций и создания сотрудника откройте http://127.0.0.1:8000/: анонимный запрос перенаправляется на `/login/`. Django development server слушает `0.0.0.0:8000` внутри контейнера, порт опубликован только на `127.0.0.1` Windows. Для `web` нет HTTP healthcheck: после `up --wait` процесс уже запущен, но сервер ещё может запускаться; при раннем отказе соединения повторите запрос через несколько секунд.
 
-В Compose два сервиса — `web` и `db` — на стандартной сети проекта. `db` использует `postgres:18.6`, не публикует порт на Windows и хранит данные в отдельном volume `kazan-courts_compose_postgres_data`, смонтированном в `/var/lib/postgresql`. Существующие `kazan-courts-postgres` и `kazan-courts-postgres-data` относятся к прежнему локальному режиму.
+В Compose работают `web`, `db`, `kafka`, `scheduler`, `publisher` и `consumer` на стандартной сети проекта. `db` использует `postgres:18.6`, не публикует порт на Windows и хранит данные в отдельном volume `kazan-courts_compose_postgres_data`, смонтированном в `/var/lib/postgresql`. Kafka 4.2.2 не публикует порт на Windows и использует отдельный volume `kazan-courts_compose_kafka_data`. Существующие `kazan-courts-postgres` и `kazan-courts-postgres-data` относятся к прежнему локальному режиму.
+
+Погодный scheduler по умолчанию не обращается в сеть: `WEATHER_NETWORK_ENABLED=0`. После отдельного разрешения на реальные обращения можно задать `WEATHER_NETWORK_ENABLED=1` в сеансе перед запуском Compose; это также разрешает ручные погодные запросы. Scheduler выполняет первую проверку при старте и следующие примерно раз в час; при временном сбое — до трёх коротких повторов, с соблюдением сохранённого `Retry-After`. После изменения переменной необходимо пересоздать сервисы. Имитация уведомлений сохраняется в PostgreSQL, реальные сообщения не отправляются. Пока миграции не применены, фоновые процессы могут сообщать об ошибках и повторять попытку.
+
+Publisher читает ожидающий Outbox по порядку и ждёт подтверждения Kafka. Если первое событие не удаётся опубликовать, последующие ждут. Consumer подтверждает offset после записи результата в PostgreSQL; повтор того же event_id не создаёт повторную имитацию. Подробности и ограничения — [Kafka design](docs/homework-04/kafka-design.md).
 
 При первой инициализации пустого volume `docker/postgres/init.sh` создаёт:
 
@@ -280,6 +284,29 @@ Remove-Variable dbEnvironment,webEnvironment,entry
 
 После работы закройте PowerShell или удалите переменные `POSTGRES_PASSWORD`, `DEV_DB_PASSWORD`, `TEST_DB_PASSWORD`, `DJANGO_SECRET_KEY`.
 
+## Изолированная интеграционная проверка Kafka
+
+Kafka-тест специально пропущен в обычном PostgreSQL-наборе и включается только через `KAFKA_INTEGRATION=1`. Он создаёт сообщения в Kafka, поэтому **не запускайте его с рабочим брокером**: отдельной тестовой БД недостаточно. Используйте новый Compose project и отдельные volumes. Пример ниже предназначен только для нового проекта `kazan-stage04-test`; сначала убедитесь, что контейнеров и volumes с этим именем нет. Значения в примере синтетические, для временной среды.
+
+```powershell
+pwsh -NoProfile -Command {
+    $env:POSTGRES_PASSWORD = 'test-bootstrap-only'
+    $env:DEV_DB_PASSWORD = 'test-dev-only'
+    $env:TEST_DB_PASSWORD = 'test-role-only'
+    $env:DB_PASSWORD = $env:TEST_DB_PASSWORD
+    $env:DJANGO_SECRET_KEY = 'test-key-only'
+    $env:WEATHER_NETWORK_ENABLED = '0'
+    docker compose -p kazan-stage04-test up -d --wait --wait-timeout 180 db kafka
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    docker compose -p kazan-stage04-test build web
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    docker compose -p kazan-stage04-test run --rm --no-deps -e DB_NAME=postgres -e DB_USER=kazan_test -e DB_PASSWORD -e KAFKA_INTEGRATION=1 web python manage.py test test_database bookings --noinput
+    exit $LASTEXITCODE
+}
+```
+
+Тестовая роль не имеет доступа к development-базе; Django создаёт и удаляет `test_kazan_courts`. В этой отдельной среде broker и его volume также тестовые: сообщение остаётся в Kafka после теста. После проверки `docker compose -p kazan-stage04-test down` останавливает контейнеры, но сохраняет отдельные volumes. Их удаление — отдельное решение. Реальный Open-Meteo не вызывается.
+
 ## Запуск в .venv: прежний локальный режим
 
 Для этого режима нужны Python 3.14.8 и PowerShell 7. Django запускается локально в `.venv`, PostgreSQL 18.6 — в существующем контейнере `kazan-courts-postgres`. Его development-база и volume независимы от Compose.
@@ -292,7 +319,7 @@ py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-В `requirements.txt` зафиксированы Django 5.2.17 и `psycopg[binary]` 3.3.6. Активировать окружение не обязательно: команды ниже используют его Python напрямую.
+В `requirements.txt` зафиксированы Django 5.2.17, `psycopg[binary]` 3.3.6 и `kafka-python` 3.0.12. Активировать окружение не обязательно: команды ниже используют его Python напрямую. Полная фоновая цепочка предназначена для Compose; прежний локальный режим сам по себе Kafka не запускает.
 
 ## Первичная подготовка PostgreSQL
 

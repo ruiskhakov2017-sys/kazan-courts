@@ -2,9 +2,9 @@
 
 ## Implemented: исходная цепочка
 
-Текущие имена и границы подтверждены в [current-system-map.md](current-system-map.md): браузер → `bookings.api.create()` → `services.create_booking()` → `weather_client.fetch_forecast()` для открытого корта → `_create_booking()` → PostgreSQL (`Booking` + `BookingEvent` в одной транзакции). Ручная перепроверка вызывается `api.weather_recheck()` → `services.recheck_weather()`. Фоновой Kafka-цепочки в текущем коде нет.
+Исходная цепочка: браузер → `bookings.api.create()` → `services.create_booking()` → `weather_client.fetch_forecast()` для открытого корта → `_create_booking()` → PostgreSQL (`Booking` + `BookingEvent` в одной транзакции). Ручная перепроверка вызывается `api.weather_recheck()` → `services.recheck_weather()`; теперь её надёжные погодные переходы тоже атомарно записывают системную историю и Outbox наряду с действием сотрудника. Ниже — фоновая цепочка этапа 4; она ожидает review.
 
-## Planned: компоненты
+## Реализация этапа 4: компоненты
 
 ```mermaid
 flowchart LR
@@ -18,7 +18,7 @@ flowchart LR
   UI[Экран сотрудника] --> PG
 ```
 
-## Planned: ухудшение / улучшение
+## Реализация этапа 4: ухудшение / улучшение
 
 ```mermaid
 sequenceDiagram
@@ -42,4 +42,4 @@ sequenceDiagram
     C->>K: Подтвердить offset
 ```
 
-При сбое погоды нет очищающего события; время последнего автоматического успеха и техническое состояние фиксируются отдельно. При повторе используется тот же `event_id`. Контракт, ограничения порядка и сбои — [kafka-design.md](kafka-design.md); будущие пути файлов/функций уточняются по фактической реализации этапа 4.
+При сбое погоды нет очищающего события; время последнего автоматического успеха и техническое состояние фиксируются отдельно. При повторе используется тот же `event_id`. Функции цепочки: `weather_scheduler.run_weather_check`, `weather_transitions.apply_weather_transition`, `kafka_pipeline.publish_pending` и `kafka_pipeline.process_notification` / `consume_one`. Контракт, ограничения порядка и сбои — [kafka-design.md](kafka-design.md).
