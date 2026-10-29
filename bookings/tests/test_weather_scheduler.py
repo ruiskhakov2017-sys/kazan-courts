@@ -1,5 +1,6 @@
 import io
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from email.utils import format_datetime
@@ -183,6 +184,8 @@ class AutomaticWeatherTests(TransactionTestCase):
         other = connections["default"].copy()
         try:
             with other.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                owner_pid = cursor.fetchone()[0]
                 cursor.execute("SELECT pg_try_advisory_lock(%s)", [LOCK_KEY])
                 self.assertTrue(cursor.fetchone()[0])
             with patch("bookings.weather_scheduler.fetch_automatic_forecast") as fetch:
@@ -190,6 +193,19 @@ class AutomaticWeatherTests(TransactionTestCase):
                 fetch.assert_not_called()
         finally:
             other.close()
+        # Closing the client socket does not synchronously wait for PostgreSQL
+        # to notice EOF and release session locks. Observe server-side release.
+        deadline = time.monotonic() + 5
+        while True:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_stat_clear_snapshot()")
+                cursor.execute("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = %s AND locktype = 'advisory')", [owner_pid])
+                held = cursor.fetchone()[0]
+            if not held:
+                break
+            if time.monotonic() >= deadline:
+                self.fail("PostgreSQL did not release the closed session's advisory lock within five seconds")
+            time.sleep(0.02)
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_try_advisory_lock(%s)", [LOCK_KEY])
             self.assertTrue(cursor.fetchone()[0])
