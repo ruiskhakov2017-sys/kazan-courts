@@ -498,5 +498,5 @@ Remove-Variable localCredentials
 
 CI сохраняет job `django-check`: Python/Django, миграции, PostgreSQL и Kafka integration,
 четыре JavaScript-теста, удаление test database, входная страница и отсутствие SQLite.
-Изменённый workflow этапа 6 ещё предстоит проверить в GitHub Actions после отдельного
-разрешения на публикацию. Он предназначен для PR в main и push в main.
+Workflow запускается для PR в main и push в main. Первый запуск в PR №18 прошёл;
+фактические результаты и ограничения приведены в [отчёте Homework 004](docs/homework-04/testing-report.md).

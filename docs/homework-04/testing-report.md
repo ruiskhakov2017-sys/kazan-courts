@@ -1,6 +1,6 @@
 # Homework 004 — матрица доказательств и результаты проверок
 
-Дата локальных проверок: 29 октября 2026. Статус этапа 6: **ожидает review**. Новая конфигурация GitHub Actions ещё не запущена; прежний `django-check` на PR №17 и на main прошёл, но Kafka-интеграция и JS в нём не выполнялись. Защита пользователя и review ментора ещё не проведены.
+Дата проверок: 29 октября 2026. Независимый Code Review этапа 6 — APPROVED по подтверждению пользователя. PR №18 открыт, его первый GitHub Actions `django-check` завершился успешно; merge не выполнялся. Фактические результаты локальных и GitHub-проверок приведены отдельно ниже. Защита пользователя и review ментора ещё не проведены.
 
 ## Mandatory/Core M1–M9
 
@@ -9,7 +9,7 @@
 | M1 | Фоновая проверка: [`schedule_weather`](../../bookings/management/commands/schedule_weather.py), [`run_weather_check`](../../bookings/weather_scheduler.py). | `SchedulerCommandTests.test_enabled_scheduler_uses_hourly_interval`, `AutomaticWeatherTests.test_clear_blocked_clear_and_error_preserves_blocked`; локально запущены два цикла настоящей команды scheduler с искусственными прогнозами, оба создали переход и Outbox. | Таймер и HTTP подменены; час реального ожидания и реальный Open-Meteo не проверялись. |
 | M2 | Ухудшение: [`apply_weather_transition`](../../bookings/weather_transitions.py), [`weather-policy.md`](weather-policy.md). | `AutomaticWeatherTests.test_clear_blocked_clear_and_error_preserves_blocked`, `KafkaIntegrationTests.test_forecast_outbox_real_broker_consumer_and_redelivery`; локальный искусственный дождь → Outbox → Kafka → результат. | Синтетический прогноз не подтверждает реальный прогноз или доставку клиенту. |
 | M3 | Улучшение и новый эпизод: тот же сервис переходов и [`kafka_pipeline.py`](../../bookings/kafka_pipeline.py). | `NotificationTests.test_sequential_transitions_create_two_simulations`, `test_second_episode_not_duplicate`; два цикла локального scheduler дали blocked → clear. | Устаревшее предупреждение может быть подавлено; автоматическое восстановление отменённой брони отсутствует. |
-| M4 | Kafka: [`compose.yaml`](../../compose.yaml), publisher / consumer в [`kafka_pipeline.py`](../../bookings/kafka_pipeline.py). | Два теста `KafkaIntegrationTests` выполнены с настоящим брокером; проверены topic, одна partition и доступ с localhost. | Один broker и диск не дают высокой доступности; новый GitHub workflow ещё не выполнен. |
+| M4 | Kafka: [`compose.yaml`](../../compose.yaml), publisher / consumer в [`kafka_pipeline.py`](../../bookings/kafka_pipeline.py). | Два теста `KafkaIntegrationTests` выполнены с настоящим брокером; проверены topic, одна partition и доступ с localhost. | Один broker и диск не дают высокой доступности; GitHub CI проверяет изолированный учебный broker, не отказоустойчивый кластер. |
 | M5 | Контракт и причины: [kafka-design.md](kafka-design.md), [decision-log.md](decision-log.md), [system-sequences.md](system-sequences.md). | Типы событий, key, version, event_id, Outbox и Consumer зафиксированы; `test_episodes_no_duplicate_and_message_identity` проверяет контракт. | Ранние самостоятельные формулировки пользователя восстановлены как реконструкция, не дословная цитата; объяснение владельца проверяется на Defense. |
 | M6 | Имитация: [`SimulatedNotification`](../../bookings/models.py), [`process_notification`](../../bookings/kafka_pipeline.py), история в [`api.py`](../../bookings/api.py). | Kafka integration test и `QueueAPITests.test_notification_history_distinguishes_result_states`; в браузере показаны simulated, suppressed и отсутствие результата. | SMS/email/звонок не выполняются; имитация не подтверждает контакт. |
 | M7 | Level 3 Track B: [system-sequences.md](system-sequences.md), [kafka-design.md](kafka-design.md); функции scheduler/publisher/consumer в коде. | Связь компонентов с реальными функциями и проверками задокументирована. | **Открыто:** личное объяснение пользователя и Defense ещё не проходили; автоматический тест не доказывает понимание. |
@@ -31,7 +31,7 @@
 | Сохранность Compose | Обычный `down` и `up`: бронь clear, 2 Outbox и 2 результата Consumer сохранены. | Проверка не заменяет backup. |
 | Изоляция PostgreSQL | После тестов `test_kazan_courts` отсутствует; Compose development DB существует; `kazan_test` не имеет CONNECT к ней (`f|t|f`). | Не относится к пользовательской production-базе. |
 | YAML и контроль пропусков | YAML разобран локально; синтетические журналы: два `ok` принимаются, пропуск и отсутствие тестов отклоняются. | Это проверка логики, а не выполнение workflow в GitHub. |
-| GitHub CI этапа 6 | **NOT VERIFIED** — новый workflow нельзя запускать без согласованных commit/push/PR. | Лимит увеличен с 10 до 15 минут для старта двух сервисов, установки зависимостей и полного набора (168,47 с на локальном host); фактическое время GitHub runner ещё не измерено. |
+| GitHub CI этапа 6 | [PR №18, run 40918237014](https://github.com/ruiskhakov2017-sys/kazan-courts/actions/runs/40918237014): `django-check` **SUCCESS**, попытка 1, commit `7247a8b07e9d3b225074a3199074b6977413f04b`; 215 Django tests passed, 0 failed, 0 skipped, 26,513 с; оба Kafka integration tests `ok`. Node: 4 passed, 0 failed, 0 skipped. Время job — 1 минута 15 секунд. Проверены одна partition, удаление тестовой базы, Django check, миграции и HTTP. | Лимит 15 минут достаточен для этого запуска, но не гарантирует времени последующих запусков; настоящие Open-Meteo и клиентские сообщения не проверялись. |
 
 ## Воспроизведение
 
@@ -45,6 +45,10 @@ node --test bookings/tests/operator_queue_ui.test.js
 `DB_PASSWORD` передаётся из заранее подготовленного окружения, как в README; не выводите реальные credentials. Node 24.13.0 не требует стороннего тестового фреймворка. Запуск с `KAFKA_INTEGRATION` отсутствующим пропускает два Kafka-теста. Новая CI-конфигурация отдельно проверяет строки `... ok` для обоих тестов и заваливает job, если они отсутствуют.
 
 Для локального прогона этапа 6 использовался проектный `.venv` и два отдельных контейнера: PostgreSQL на `127.0.0.1:15436` под `kazan_test`, Kafka на `127.0.0.1:9092`, `KAFKA_INTEGRATION=1`, `WEATHER_NETWORK_ENABLED=0`; точная команда: `.venv\Scripts\python.exe manage.py test test_database bookings --verbosity 2 --noinput`. Пароли и ключ были синтетическими и заданы только процессу. Тесты создают и удаляют `test_kazan_courts`.
+
+## Подтверждение GitHub Actions
+
+На первом запуске повторных прогонов и ошибок CI не было. Журнал `django-check` содержит оба результата `ok`: `test_invalid_record_is_redelivered_and_blocks_later_message` и `test_forecast_outbox_real_broker_consumer_and_redelivery`. Строка `Both real Kafka integration tests passed` подтверждает проверку отсутствия пропуска; topic `booking.weather.v1` имеет одну partition и доступен клиенту runner. В журнале Node test runner указаны `tests 4`, `pass 4`, `fail 0`, `skipped 0`. Полный Django-набор завершился `Ran 215 tests` и `OK` без пропусков. Результат относится к указанному commit; проверка последующих изменений выполняется отдельным запуском CI.
 
 ## Advisory lock: прежний сбой и исследование
 
