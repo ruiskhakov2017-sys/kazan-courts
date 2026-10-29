@@ -16,6 +16,8 @@
         data-reschedule-url="{% url 'api:reschedule_booking' 0 %}"
         data-cancel-url="{% url 'api:cancel_booking' 0 %}"
         data-history-url="{% url 'api:booking_history' 0 %}"
+        data-weather-queue-url="{% url 'api:weather_queue' %}"
+        data-contact-no-answer-url="{% url 'api:contact_no_answer' 0 %}"
         data-weather-url="{% url 'api:weather' %}"
         data-weather-health-url="{% url 'api:weather_health' %}"
         data-weather-recheck-url="{% url 'api:weather_recheck' %}"
@@ -66,6 +68,22 @@
         <p id="create-status" role="status" aria-live="polite"></p>
       </form>
     </section>
+    <section aria-labelledby="queue-heading">
+      <h2 id="queue-heading">Брони с погодным запретом</h2>
+      <p>Брони остаются действующими. Согласуйте с клиентом перенос или отмену в рабочее время.</p>
+      <button id="refresh-weather-queue" type="button">Обновить очереди</button>
+      <p id="queue-status" role="status" aria-live="polite">Загрузка очередей…</p>
+      <h3>К обработке оператором — 72 часа или менее</h3>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Бронь / корт</th><th scope="col">Время</th><th scope="col">Клиент и телефон</th><th scope="col">Действие</th></tr></thead>
+        <tbody id="queue-action"></tbody>
+      </table></div>
+      <h3>Наблюдение — более 72 часов</h3>
+      <div class="table-scroll"><table>
+        <thead><tr><th scope="col">Бронь / корт</th><th scope="col">Время</th><th scope="col">Клиент и телефон</th><th scope="col">Действие</th></tr></thead>
+        <tbody id="queue-observation"></tbody>
+      </table></div>
+    </section>
     <section aria-labelledby="schedule-heading">
       <h2 id="schedule-heading">Брони выбранного корта</h2>
       <form id="schedule-filter">
@@ -89,6 +107,8 @@
       <h2 id="detail-heading">Выбранная бронь</h2>
       <p id="booking-summary"></p>
       <p id="booking-freshness" role="status" aria-live="polite"></p>
+      <button id="contact-no-answer" type="button" disabled>Не дозвонились</button>
+      <p id="contact-status" role="status" aria-live="polite"></p>
       <div class="action-grid">
         <form id="reschedule-booking" class="booking-form">
           <fieldset id="reschedule-fields" disabled>
@@ -116,7 +136,7 @@
       <p id="history-status" role="status" aria-live="polite"></p>
       <div class="table-scroll">
         <table>
-          <thead><tr><th scope="col">Когда</th><th scope="col">Действие</th><th scope="col">Сотрудник</th><th scope="col">Причина</th><th scope="col">Изменения</th></tr></thead>
+          <thead><tr><th scope="col">Когда</th><th scope="col">Действие</th><th scope="col">Сотрудник</th><th scope="col">Причина</th><th scope="col">Изменения</th><th scope="col">Имитация уведомления</th></tr></thead>
           <tbody id="history-rows"></tbody>
         </table>
       </div>

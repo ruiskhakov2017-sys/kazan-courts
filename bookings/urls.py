@@ -10,6 +10,7 @@ urlpatterns = [
     path("schedule/", api.schedule, name="schedule"),
     path("weather/", api.weather, name="weather"),
     path("weather/health/", api.weather_health, name="weather_health"),
+    path("weather/queue/", api.weather_queue, name="weather_queue"),
     path("weather/recheck/", api.weather_recheck, name="weather_recheck"),
     path("courts/<int:court_id>/surface/close/", api.surface_close, name="surface_close"),
     path("courts/<int:court_id>/surface/ready/", api.surface_ready, name="surface_ready"),
@@ -18,4 +19,5 @@ urlpatterns = [
     path("bookings/<int:booking_id>/cancel/", api.cancel, name="cancel_booking"),
     path("bookings/<int:booking_id>/archive/", api.archive, name="archive_booking"),
     path("bookings/<int:booking_id>/history/", api.history, name="booking_history"),
+    path("bookings/<int:booking_id>/contact/no-answer/", api.contact_no_answer, name="contact_no_answer"),
 ]

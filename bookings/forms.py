@@ -87,3 +87,13 @@ class EmptyActionForm(forms.Form):
         if self.data:
             raise ValidationError("Это действие принимает пустой JSON-объект.")
         return cleaned
+
+
+class ContactAttemptForm(forms.Form):
+    request_id = forms.UUIDField()
+
+    def clean(self):
+        cleaned = super().clean()
+        if set(self.data) != {"request_id"} or not isinstance(self.data.get("request_id"), str):
+            raise ValidationError("Передайте только request_id в формате UUID.")
+        return cleaned
