@@ -11,7 +11,7 @@
   const statuses = { active: "Действует", cancelled: "Отменена" };
   const weatherLabels = { clear: "Без дождевого запрета", blocked: "Дождь / морось: период запрещён", unknown: "Погода не проверена", not_applicable: "Для крытого корта не требуется" };
   const surfaces = { available: "Готово", drying: "Просушка", maintenance: "Обслуживание" };
-  const events = { created: "Создание", rescheduled: "Перенос", cancelled: "Отмена", archived: "Архив", weather_checked: "Перепроверка погоды" };
+  const events = { created: "Создание", rescheduled: "Перенос", cancelled: "Отмена", archived: "Архив", weather_checked: "Перепроверка погоды", weather_blocked: "Погодный запрет", weather_cleared: "Погодный запрет снят", contact_no_answer: "Не дозвонились" };
   const formatter = new Intl.DateTimeFormat("ru-RU", {
     timeZone: app.dataset.timeZone, day: "2-digit", month: "2-digit", year: "numeric",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23",
@@ -20,8 +20,9 @@
     timeZone: app.dataset.timeZone, year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   });
-  let actionPending = false, scheduleLoaded = false, viewVersion = 0, historyVersion = 0;
+  let actionPending = false, scheduleLoaded = false, viewVersion = 0, historyVersion = 0, queueVersion = 0, healthVersion = 0;
   let selectedBooking = null, selectedFresh = false;
+  const contactRequests = new Map();
 
   function setStatus(element, message, kind = "") {
     element.textContent = message;
@@ -132,6 +133,8 @@
     const canChange = !actionPending && selectedFresh && selectedBooking?.status === "active" && !selectedBooking.archived_at;
     byId("reschedule-fields").disabled = !canChange;
     byId("cancel-fields").disabled = !canChange;
+    byId("contact-no-answer").disabled = !canChange || selectedBooking?.weather_status !== "blocked";
+    byId("refresh-weather-queue").disabled = actionPending;
     const court = courts.get(Number(courtSelect.value));
     byId("close-surface").disabled = actionPending || !court || court.court_type !== "outdoor" || court.surface_status !== "available";
     byId("ready-surface").disabled = actionPending || !court || court.court_type !== "outdoor" || court.surface_status !== "drying";
@@ -203,6 +206,7 @@
     ++historyVersion;
     byId("booking-detail").hidden = true;
     byId("history-rows").replaceChildren();
+    setStatus(byId("contact-status"), "");
     updateControls();
   }
   function renderSelected(resetDraft = false) {
@@ -218,6 +222,7 @@
       booking.status === "cancelled" ? "Бронь отменена. История сохранена, время освобождено." :
       "Перенос и отмена разрешены только до начала; текущее состояние повторно проверяет сервер.", selectedFresh ? "" : "warning");
     if (resetDraft) {
+      setStatus(byId("contact-status"), "");
       rescheduleForm.elements.starts_at.value = inputTime(booking.starts_at);
       rescheduleForm.elements.ends_at.value = inputTime(booking.ends_at);
       rescheduleForm.elements.reason.value = "";
@@ -254,8 +259,11 @@
       if (version !== historyVersion || selectedBooking?.id !== id) return;
       if (!Array.isArray(data?.events)) throw new Error("Не удалось получить историю.");
       for (const event of data.events) {
-        const actor = String(event.actor_id) === app.dataset.employeeId ? app.dataset.employeeName + " (№" + event.actor_id + ")" : "Сотрудник №" + event.actor_id;
-        row(byId("history-rows"), [formatTime(event.occurred_at), events[event.event_type] || event.event_type, actor, event.reason || "—", describeChanges(event)]);
+        const actor = event.actor_id === null ? "Система" : String(event.actor_id) === app.dataset.employeeId ? app.dataset.employeeName + " (№" + event.actor_id + ")" : "Сотрудник №" + event.actor_id;
+        const notice = event.notification;
+        const noticeText = !notice ? "—" : notice.state === "simulated" ? "Имитация, клиенту не отправлено: " + notice.text :
+          notice.state === "suppressed" ? "Имитация подавлена, клиенту не отправлено." : "Результата Consumer пока нет; клиенту не отправлено.";
+        row(byId("history-rows"), [formatTime(event.occurred_at), events[event.event_type] || event.event_type, actor, event.reason || "—", describeChanges(event), noticeText]);
       }
       setStatus(byId("history-status"), data.events.length ? "История загружена из базы." : "Событий пока нет.");
     } catch (error) {
@@ -331,6 +339,7 @@
     if (selectedBooking) await loadHistory(selectedBooking.id);
   }
   function beginWrite() {
+    ++viewVersion; ++queueVersion; ++historyVersion; ++healthVersion;
     actionPending = true;
     updateControls();
   }
@@ -360,6 +369,7 @@
       setStatus(statusElement, message + " №" + data.booking.id + ". " + warnings.join(" "), warnings.length ? "warning" : "success");
       // A read failure cannot turn a committed write into a reported rejection.
       await refreshContext();
+      await refreshWeatherQueue();
     } catch (error) {
       if (saved) setStatus(statusElement, message + " №" + selectedBooking.id + ". Не удалось обновить экран; обновите расписание.", "warning");
       else showError(form, statusElement, error);
@@ -379,6 +389,7 @@
       renderCourtState();
       setStatus(byId("weather-action-status"), [message, ...(data.warnings || [])].join(" "), data.warnings?.length ? "warning" : "success");
       await refreshContext();
+      await refreshWeatherQueue();
     } catch (error) {
       setStatus(byId("weather-action-status"), saved ? "Состояние покрытия сохранено. Не удалось обновить экран." :
         error.message + (error.uncertain ? " Результат неизвестен. Обновите состояние перед повтором." : ""), saved ? "warning" : "error");
@@ -391,6 +402,75 @@
     clearSelection();
     await refreshContext();
     await openBooking(booking.id);
+  }
+  async function refreshWeatherQueue() {
+    const version = ++queueVersion;
+    try {
+      const data = await requestJSON(app.dataset.weatherQueueUrl);
+      if (version !== queueVersion) return;
+      if (!Array.isArray(data?.action) || !Array.isArray(data?.observation)) throw new Error("Не удалось прочитать очереди.");
+      for (const [id, items] of [["queue-action", data.action], ["queue-observation", data.observation]]) {
+        const body = byId(id);
+        body.replaceChildren();
+        for (const item of items) {
+          if (!validBooking(item?.booking) || !item.customer) throw new Error("Некорректные данные очереди.");
+          const entry = row(body, ["№" + item.booking.id + " / " + item.court_name,
+            formatTime(item.booking.starts_at) + " — " + formatTime(item.booking.ends_at),
+            item.customer.name + " / " + item.customer.phone, ""]);
+          entry.lastElementChild.append(openButton(item.booking.id, () => openAffected(item.booking)));
+        }
+      }
+      if (selectedFresh && selectedBooking?.weather_status === "blocked" &&
+          ![...data.action, ...data.observation].some((item) => item.booking.id === selectedBooking.id)) {
+        selectedFresh = false;
+        renderSelected();
+      }
+      setStatus(byId("queue-status"), "Обновлено: " + formatTime(data.as_of) + ". К обработке: " + data.action.length + "; наблюдение: " + data.observation.length + ".");
+      updateControls();
+    } catch (error) {
+      if (version !== queueVersion) return;
+      setStatus(byId("queue-status"), "Очереди не обновлены. Показанные данные могут устареть. " + error.message, "warning");
+    }
+  }
+  function contactStorageKey(id) { return "kazan-contact:" + app.dataset.employeeId + ":" + id; }
+  function pendingContactId(id) {
+    let value = contactRequests.get(id) || sessionStorage.getItem(contactStorageKey(id));
+    if (!value) value = crypto.randomUUID();
+    // Do not send unless the id can survive an uncertain response and page reload.
+    sessionStorage.setItem(contactStorageKey(id), value);
+    contactRequests.set(id, value);
+    return value;
+  }
+  function clearContactId(id) {
+    try {
+      sessionStorage.removeItem(contactStorageKey(id));
+      if (sessionStorage.getItem(contactStorageKey(id)) !== null) return false;
+      contactRequests.delete(id);
+      return true;
+    } catch { return false; }
+  }
+  async function contactNoAnswer() {
+    if (actionPending || !selectedFresh || selectedBooking?.weather_status !== "blocked") return;
+    const id = selectedBooking.id;
+    let requestId;
+    try { requestId = pendingContactId(id); }
+    catch { setStatus(byId("contact-status"), "Не удалось подготовить защищённый запрос.", "error"); return; }
+    beginWrite();
+    setStatus(byId("contact-status"), "Сохранение попытки связи…");
+    try {
+      const data = await requestJSON(recordURL(app.dataset.contactNoAnswerUrl, id), {request_id: requestId});
+      if (data?.booking_id !== id || !Number.isSafeInteger(data?.event_id)) throw apiError("Подтверждение записи не получено.", 200, {}, true);
+      if (!clearContactId(id)) throw apiError("Попытка сохранена, но хранилище запроса недоступно.", 200, {}, true);
+      setStatus(byId("contact-status"), "Попытка связи сохранена. Обновляем состояние брони.", "success");
+    } catch (error) {
+      if (!error.uncertain) clearContactId(id);
+      setStatus(byId("contact-status"), error.message + (error.uncertain ?
+        " Результат неизвестен. Повторное нажатие проверит тот же запрос, не создавая дубль." : " Обновите данные."), "error");
+    } finally {
+      await Promise.all([refreshWeatherQueue(), refreshContext()]);
+      actionPending = false;
+      updateControls();
+    }
   }
   async function recheckWeather() {
     if (actionPending) return;
@@ -410,14 +490,17 @@
       }
       setStatus(byId("weather-action-status"), "Проверено: " + data.checked_count + ". Требуют внимания: " + data.affected_bookings.length + ". Брони сохранены.", "success");
       await refreshContext();
+      await refreshWeatherQueue();
     } catch (error) {
       setStatus(byId("weather-action-status"), saved ? "Перепроверка сохранена. Не удалось обновить экран." :
         error.message + (error.uncertain ? " Результат неизвестен. Обновите состояние перед повтором." : ""), saved ? "warning" : "error");
     } finally { actionPending = false; updateControls(); }
   }
   async function loadWeatherHealth() {
+    const version = ++healthVersion;
     try {
       const data = await requestJSON(app.dataset.weatherHealthUrl);
+      if (version !== healthVersion) return;
       const labels = {
         not_started: "Автоматическая проверка ещё не запускалась.",
         success: "Прогноз получен. Это не подтверждает обработку всех броней.",
@@ -428,6 +511,7 @@
       const last = data.last_success_at ? " Последняя успешная проверка: " + formatTime(data.last_success_at) + "." : " Успешных проверок пока нет.";
       setStatus(byId("weather-health"), message + last, ["error", "stale"].includes(data.state) ? "warning" : "");
     } catch {
+      if (version !== healthVersion) return;
       setStatus(byId("weather-health"), "Не удалось загрузить состояние автоматической проверки.", "warning");
     }
   }
@@ -488,7 +572,12 @@
   byId("close-surface").addEventListener("click", () => surfaceAction(app.dataset.surfaceCloseUrl, "Корт закрыт на просушку."));
   byId("ready-surface").addEventListener("click", () => surfaceAction(app.dataset.surfaceReadyUrl, "Физическая готовность подтверждена после осмотра."));
   byId("recheck-weather").addEventListener("click", recheckWeather);
+  byId("refresh-weather-queue").addEventListener("click", () => { if (!actionPending) refreshWeatherQueue(); });
+  byId("contact-no-answer").addEventListener("click", contactNoAnswer);
   loadWeatherHealth();
-  window.setInterval(loadWeatherHealth, 60000);
+  refreshWeatherQueue();
+  window.setInterval(() => {
+    if (!actionPending && !document.hidden) { loadWeatherHealth(); refreshWeatherQueue(); }
+  }, 60000);
   loadData();
 })();

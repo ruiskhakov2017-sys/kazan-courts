@@ -54,11 +54,24 @@ def apply_weather_transition(*, booking_id, expected_starts_at, expected_ends_at
 
 
 @transaction.atomic
-def record_no_answer(*, actor, booking_id):
+def record_no_answer(*, actor, booking_id, request_id=None):
     employee = _employee(actor)
-    booking = Booking.objects.select_for_update().get(pk=booking_id)
-    if booking.status != Booking.Status.ACTIVE or booking.archived_at is not None:
-        raise BookingOperationError("invalid_booking_state", "Бронь больше не действует.", 409)
+    try:
+        booking = Booking.objects.select_for_update(of=("self",)).select_related("court").get(pk=booking_id)
+    except Booking.DoesNotExist as error:
+        raise BookingOperationError("booking_not_found", "Бронь не найдена.", 404) from error
+    if request_id is not None:
+        prior = booking.events.filter(event_type="contact_no_answer", after__contact_request_id=str(request_id)).first()
+        if prior:
+            if prior.actor_id != employee.pk:
+                raise BookingOperationError("request_id_conflict", "Идентификатор запроса уже использован.", 409)
+            return prior
+    if (booking.status != Booking.Status.ACTIVE or booking.archived_at is not None or
+            booking.starts_at <= timezone.now() or booking.weather_status != Booking.WeatherStatus.BLOCKED or
+            booking.court.court_type != "outdoor"):
+        raise BookingOperationError("invalid_booking_state", "Бронь больше не находится в погодной очереди.", 409)
     snapshot = booking_snapshot(booking)
+    if request_id is not None:
+        snapshot["contact_request_id"] = str(request_id)
     return BookingEvent.objects.create(booking=booking, actor=employee, event_type="contact_no_answer",
                                        before=snapshot, after=snapshot, reason="Не дозвонились")

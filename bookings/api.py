@@ -10,10 +10,11 @@ from django.conf import settings
 from django.core.exceptions import RequestDataTooBig
 from django.db import DatabaseError
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
-from .forms import BookingActionForm, BookingCreateForm, BookingRescheduleForm, EmptyActionForm, ScheduleQueryForm
-from .models import Booking, Court, Customer
+from .forms import BookingActionForm, BookingCreateForm, BookingRescheduleForm, ContactAttemptForm, EmptyActionForm, ScheduleQueryForm
+from .models import Booking, Court, Customer, OutboxMessage
 from .services import (
     BookingOperationError, archive_booking, booking_snapshot, cancel_booking,
     close_surface, confirm_surface, create_booking, recheck_weather, reschedule_booking,
@@ -21,6 +22,7 @@ from .services import (
 from .weather_client import fetch_forecast
 from .weather_policy import blocks_for_day, warnings_for_status
 from .weather_health import integration_health
+from .weather_transitions import record_no_answer
 
 logger = logging.getLogger(__name__)
 
@@ -182,10 +184,44 @@ def history(request, booking_id):
     booking = Booking.objects.filter(pk=booking_id).first()
     if booking is None:
         return error_response("booking_not_found", "Бронь не найдена.", 404)
-    events = booking.events.order_by("occurred_at", "pk").values(
-        "id", "event_type", "actor_id", "occurred_at", "before", "after", "reason",
-    )
+    events = list(booking.events.order_by("occurred_at", "pk").values(
+        "id", "event_type", "actor_id", "occurred_at", "before", "after", "reason", "weather_episode_id",
+    ))
+    notifications = {row["booking_event_id"]: row for row in OutboxMessage.objects.filter(
+        booking_event__booking_id=booking_id).values("booking_event_id", "notification__result", "notification__text")}
+    for event in events:
+        notice = notifications.get(event["id"])
+        event["notification"] = ({"state": notice["notification__result"] or "pending",
+                                  "text": notice["notification__text"] or ""} if notice else None)
+        # Request IDs are transport metadata, not part of the displayed booking snapshot.
+        for key in ("before", "after"):
+            if isinstance(event[key], dict):
+                event[key].pop("contact_request_id", None)
     return JsonResponse({"booking_id": booking_id, "events": list(events)})
+
+
+@employee_read
+def weather_queue(request):
+    now = timezone.now()
+    cutoff = now + timedelta(hours=72)
+    rows = Booking.objects.filter(status=Booking.Status.ACTIVE, archived_at__isnull=True,
+                                  starts_at__gt=now, weather_status=Booking.WeatherStatus.BLOCKED,
+                                  court__court_type=Court.CourtType.OUTDOOR).select_related("court", "customer").order_by("starts_at", "pk")
+    observation, action = [], []
+    for booking in rows:
+        item = {"booking": {"id": booking.pk, **booking_snapshot(booking)}, "court_name": booking.court.name,
+                "customer": {"id": booking.customer_id, "name": booking.customer.name, "phone": booking.customer.phone}}
+        (action if booking.starts_at <= cutoff else observation).append(item)
+    return JsonResponse({"as_of": now.isoformat(), "observation": observation, "action": action})
+
+
+@employee_booking(("POST",))
+def contact_no_answer(request, booking_id):
+    if not 1 <= booking_id <= 9223372036854775807:
+        raise BookingOperationError("booking_not_found", "Бронь не найдена.", 404)
+    values = _json_form(request, ContactAttemptForm)
+    event = record_no_answer(actor=request.user, booking_id=booking_id, request_id=values["request_id"])
+    return JsonResponse({"booking_id": booking_id, "event_id": event.pk, "occurred_at": event.occurred_at})
 
 
 @employee_read
