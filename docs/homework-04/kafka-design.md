@@ -1,4 +1,4 @@
-# Kafka design — реализация этапа 4, ожидает review
+# Kafka design — реализация этапа 4 объединена в main
 
 Пользователь утвердил один локальный брокер, один topic, Transactional Outbox и отдельный имитатор уведомлений. В Compose используется Apache Kafka 4.2.2, topic `booking.weather.v1` с одной partition; Python 3.14.8 и `kafka-python==3.0.12`. Kafka и PostgreSQL имеют разные volumes. Порт Kafka наружу не опубликован. Это учебная конфигурация, не отказоустойчивый кластер.
 

@@ -1,8 +1,8 @@
-# System sequences — Draft
+# System sequences — реализация Homework 004
 
 ## Implemented: исходная цепочка
 
-Исходная цепочка: браузер → `bookings.api.create()` → `services.create_booking()` → `weather_client.fetch_forecast()` для открытого корта → `_create_booking()` → PostgreSQL (`Booking` + `BookingEvent` в одной транзакции). Ручная перепроверка вызывается `api.weather_recheck()` → `services.recheck_weather()`; теперь её надёжные погодные переходы тоже атомарно записывают системную историю и Outbox наряду с действием сотрудника. Ниже — фоновая цепочка этапа 4; она ожидает review.
+Исходная цепочка: браузер → `bookings.api.create()` → `services.create_booking()` → `weather_client.fetch_forecast()` для открытого корта → `_create_booking()` → PostgreSQL (`Booking` + `BookingEvent` в одной транзакции). Ручная перепроверка вызывается `api.weather_recheck()` → `services.recheck_weather()`; теперь её надёжные погодные переходы тоже атомарно записывают системную историю и Outbox наряду с действием сотрудника. Ниже — фоновая цепочка этапа 4, объединённая в main; её проверка описана в [testing-report.md](testing-report.md).
 
 ## Реализация этапа 4: компоненты
 
