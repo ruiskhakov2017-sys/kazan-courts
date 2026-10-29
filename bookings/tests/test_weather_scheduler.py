@@ -53,6 +53,7 @@ class AutomaticWeatherTests(TransactionTestCase):
         with patch("bookings.weather_client.urlopen", side_effect=http_error(429, {"Retry-After": "600"})) as transport, patch("bookings.weather_client.time.sleep") as sleep:
             result = run_weather_check()
             self.assertEqual(result["status"], "unavailable")
+            self.assertTrue(result["retryable"])
             state = WeatherIntegrationStatus.objects.get()
             self.assertEqual(state.error_code, "rate_limited")
             self.assertGreater(state.next_allowed_at, self.now + timedelta(minutes=9))
@@ -66,12 +67,15 @@ class AutomaticWeatherTests(TransactionTestCase):
             with self.subTest(code=code), patch("bookings.weather_client.urlopen", side_effect=[side_effect]) as transport, patch("bookings.weather_client.time.sleep") as sleep:
                 result = fetch_automatic_forecast()
                 self.assertEqual(result.error_code, code)
+                self.assertFalse(result.retryable)
                 self.assertEqual(transport.call_count, 1)
                 sleep.assert_not_called()
 
     def test_503_retries_and_exhausts(self):
         with patch("bookings.weather_client.urlopen", side_effect=[http_error(503), http_error(503), http_error(503)]) as transport, patch("bookings.weather_client.time.sleep") as sleep:
-            self.assertEqual(fetch_automatic_forecast().error_code, "forecast_unavailable")
+            result = fetch_automatic_forecast()
+            self.assertEqual(result.error_code, "forecast_unavailable")
+            self.assertTrue(result.retryable)
             self.assertEqual(transport.call_count, 3)
             self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 3])
 

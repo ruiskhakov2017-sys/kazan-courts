@@ -1,5 +1,15 @@
 name: kazan-courts
 
+x-django-environment: &django-environment
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY}
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_NAME: kazan_courts_dev
+  DB_USER: kazan_dev
+  DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  WEATHER_NETWORK_ENABLED: ${WEATHER_NETWORK_ENABLED:-0}
+
 services:
   db:
     image: postgres:18.6
@@ -21,18 +31,68 @@ services:
 
   web:
     build: .
-    environment:
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY}
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: kazan_courts_dev
-      DB_USER: kazan_dev
-      DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
+    environment: *django-environment
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
 
+  kafka:
+    image: apache/kafka:4.2.2
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - compose_kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 30s
+      retries: 18
+      start_period: 20s
+
+  publisher:
+    build: .
+    restart: unless-stopped
+    command: ["python", "manage.py", "publish_weather"]
+    environment: *django-environment
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  consumer:
+    build: .
+    restart: unless-stopped
+    command: ["python", "manage.py", "consume_weather"]
+    environment: *django-environment
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    command: ["python", "manage.py", "schedule_weather"]
+    environment: *django-environment
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   compose_postgres_data:
+  compose_kafka_data:

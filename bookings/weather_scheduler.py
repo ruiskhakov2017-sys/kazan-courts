@@ -23,12 +23,13 @@ def run_weather_check():
         now = timezone.now()
         state = WeatherIntegrationStatus.objects.filter(pk=1).first()
         if state and state.next_allowed_at and state.next_allowed_at > now:
-            return {"status": "deferred", "checked": 0, "events": 0}
+            return {"status": "deferred", "checked": 0, "events": 0, "next_allowed_at": state.next_allowed_at}
         result = fetch_automatic_forecast()
         if result.forecast is None:
             record_automatic_result(succeeded=False, attempted_at=now, error_code=result.error_code,
                                     next_allowed_at=result.next_allowed_at)
-            return {"status": "unavailable", "checked": 0, "events": 0}
+            return {"status": "unavailable", "checked": 0, "events": 0,
+                    "retryable": result.retryable, "next_allowed_at": result.next_allowed_at}
         record_automatic_result(succeeded=True, attempted_at=now)
         forecast = result.forecast
         rows = Booking.objects.filter(status="active", archived_at__isnull=True, starts_at__gt=timezone.now(),

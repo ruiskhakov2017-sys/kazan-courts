@@ -6,7 +6,7 @@
 
 ## Утверждённое решение пользователя
 
-Для Homework 004 добавить почасовую проверку, три таблицы `WeatherIntegrationStatus`, `OutboxMessage`, `SimulatedNotification`, расширить `BookingEvent`, использовать один Kafka topic, publisher и consumer-имитатор. Новые механизмы ещё не реализованы.
+Для Homework 004 добавить почасовую проверку, три таблицы `WeatherIntegrationStatus`, `OutboxMessage`, `SimulatedNotification`, расширить `BookingEvent`, использовать один Kafka topic, publisher и consumer-имитатор. На момент первоначального design review эти механизмы ещё не были реализованы; текущее состояние этапов указано в [Implementation Plan](implementation-plan.md).
 
 ## AI challenge и предложение
 

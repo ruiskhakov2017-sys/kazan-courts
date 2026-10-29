@@ -345,6 +345,9 @@ def recheck_weather(*, actor):
 
 @_retry_deadlock
 def _recheck_weather(*, actor, forecast):
+    # Local import avoids the existing transition service's dependency on snapshots.
+    from .weather_transitions import apply_weather_transition
+
     with _booking_transaction():
         employee = _employee(actor)
         courts = {pk: _court_for_share(pk) for pk in Court.objects.filter(court_type="outdoor").order_by("pk").values_list("pk", flat=True)}
@@ -360,9 +363,16 @@ def _recheck_weather(*, actor, forecast):
             blocks = blocks_for_interval(forecast, booking.starts_at, booking.ends_at)
             before = booking_snapshot(booking)
             new_status = interval_status(blocks)
-            if not (booking.weather_status == "blocked" and new_status == "unknown"):
-                booking.weather_status = new_status
+            if new_status in ("clear", "blocked"):
+                apply_weather_transition(booking_id=booking.pk, expected_starts_at=booking.starts_at,
+                                         expected_ends_at=booking.ends_at, status=new_status,
+                                         checked_at=forecast.checked_at)
+                booking.refresh_from_db()
+            elif (booking.weather_status != "blocked" and
+                  (booking.weather_checked_at is None or forecast.checked_at >= booking.weather_checked_at)):
+                booking.weather_status = "unknown"
                 booking.weather_checked_at = forecast.checked_at
+            # Retain the employee's manual audit even when there is no transition.
             booking.save(update_fields=["weather_status", "weather_checked_at", "updated_at"])
             _record_change(booking, employee, BookingEvent.EventType.WEATHER_CHECKED, before, "Ручная перепроверка прогноза")
             checked_count += 1
