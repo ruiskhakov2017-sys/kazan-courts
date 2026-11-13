@@ -1,0 +1,12 @@
+✔ out-of-order queue responses cannot overwrite the newer result (44.584771ms)
+✔ a queue response started before a write cannot overwrite data after it (5.608285ms)
+✔ uncertain contact retries the same request, then a new action gets a new id (14.543317ms)
+✔ contact is not sent if its request id cannot be persisted (4.943905ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 153.130403

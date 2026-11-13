@@ -1,0 +1,14 @@
+test_broker_client_is_closed (config.test_health.HealthTests.test_broker_client_is_closed) ... ok
+test_broker_failure_is_sanitized (config.test_health.HealthTests.test_broker_failure_is_sanitized) ... ok
+test_live_never_touches_dependencies (config.test_health.HealthTests.test_live_never_touches_dependencies) ... ok
+test_postgres_failure_is_sanitized (config.test_health.HealthTests.test_postgres_failure_is_sanitized) ... ok
+test_probes_are_read_only (config.test_health.HealthTests.test_probes_are_read_only) ... ok
+test_readiness_matrix_and_recovery (config.test_health.HealthTests.test_readiness_matrix_and_recovery) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.020s
+
+OK
+Found 6 test(s).
+Skipping setup of unused database(s): default.
+System check identified no issues (0 silenced).

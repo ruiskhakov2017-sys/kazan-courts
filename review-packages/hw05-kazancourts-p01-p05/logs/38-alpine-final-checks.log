@@ -1,0 +1,9 @@
+System check identified no issues (0 silenced).
+No changes detected
+PASS DEBUG and hosts overridden without code edits
+12 objects imported automatically (use -v 2 for details).
+
+PASS test DB removed and test role denied development connection
+PASS actual login HTTP200 and fields
+PASS .env mode 0600 and overwrite prevention
+PASS original checkout unchanged and clean

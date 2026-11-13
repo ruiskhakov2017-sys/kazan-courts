@@ -1,0 +1,126 @@
+#1 [internal] load local bake definitions
+#1 reading from stdin 4.25kB done
+#1 DONE 0.0s
+
+#2 [consumer internal] load build definition from Dockerfile
+#2 transferring dockerfile: 766B done
+#2 DONE 0.0s
+
+#3 [db internal] load build definition from Dockerfile
+#3 transferring dockerfile: 223B done
+#3 DONE 0.0s
+
+#4 [db internal] load metadata for docker.io/library/postgres:18.6
+#4 DONE 0.0s
+
+#5 [db internal] load .dockerignore
+#5 transferring context: 226B done
+#5 DONE 0.0s
+
+#6 [db 1/2] FROM docker.io/library/postgres:18.6
+#6 DONE 0.0s
+
+#7 [db internal] load build context
+#7 transferring context: 106B done
+#7 DONE 0.0s
+
+#8 [db 2/2] COPY --chmod=0755 docker/postgres/init.sh /docker-entrypoint-initdb.d/01-init.sh
+#8 CACHED
+
+#9 [db] exporting to image
+#9 exporting layers done
+#9 writing image sha256:cc78981d11319dd52a98ce87bb3beaecd06af29c022630de154d20eb2b534c1a done
+#9 naming to docker.io/library/kc-hw05-review-db done
+#9 DONE 0.0s
+
+#10 [db] resolving provenance for metadata file
+#10 DONE 0.0s
+
+#11 [migrate internal] load metadata for docker.io/library/python:3.14.8-slim
+#11 DONE 0.5s
+
+#5 [consumer internal] load .dockerignore
+#5 CACHED
+
+#12 [consumer stage-0 1/9] FROM docker.io/library/python:3.14.8-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
+#12 DONE 0.0s
+
+#13 [publisher internal] load build context
+#13 transferring context: 377.60kB 0.0s done
+#13 DONE 0.0s
+
+#14 [publisher stage-0 2/9] WORKDIR /app
+#14 CACHED
+
+#15 [publisher stage-0 3/9] COPY requirements.txt ./
+#15 CACHED
+
+#16 [publisher stage-0 4/9] RUN --mount=type=secret,id=cloud_ca,target=/run/cloud-ca.pem     if [ -f /run/cloud-ca.pem ]; then export PIP_CERT=/run/cloud-ca.pem; fi;     python -m pip install --no-cache-dir -r requirements.txt     && useradd --create-home --uid 10001 app
+#16 CACHED
+
+#17 [publisher stage-0 5/9] COPY --chmod=0755 --chown=app:app manage.py test_database.py ./
+#17 CACHED
+
+#18 [publisher stage-0 6/9] COPY --chmod=0755 --chown=app:app config ./config
+#18 DONE 0.8s
+
+#19 [migrate stage-0 7/9] COPY --chmod=0755 --chown=app:app bookings ./bookings
+#19 DONE 11.1s
+
+#20 [consumer stage-0 8/9] COPY --chmod=0755 --chown=app:app templates ./templates
+#20 DONE 11.5s
+
+#21 [consumer stage-0 9/9] COPY --chmod=0755 --chown=app:app static ./static
+#21 DONE 1.0s
+
+#22 [publisher] exporting to image
+#22 exporting layers
+#22 exporting layers 0.6s done
+#22 writing image sha256:0bbdf3c0858f09579968f21aaadb25521b3e18c4ab5db1ed79795980d1d1d4fa done
+#22 naming to docker.io/library/kc-hw05-review-publisher 0.0s done
+#22 DONE 0.7s
+
+#23 [web] exporting to image
+#23 exporting layers 0.6s done
+#23 writing image sha256:c1ab2fc02b9815974c378394655fc09b13f43e04768167a5678a906a8964cac1 done
+#23 naming to docker.io/library/kc-hw05-review-web done
+#23 DONE 0.7s
+
+#24 [migrate] exporting to image
+#24 exporting layers 0.6s done
+#24 writing image sha256:db67eb984ee5d181192d802d6327b1c42009be71f02d792db796493ab337eed7 done
+#24 naming to docker.io/library/kc-hw05-review-migrate 0.0s done
+#24 DONE 0.7s
+
+#25 [consumer] exporting to image
+#25 exporting layers 0.7s done
+#25 writing image sha256:c0bfb8fcf141db8967f568f92ae813bb3db5a547dfad8d5a4d3808dba6490164 done
+#25 naming to docker.io/library/kc-hw05-review-consumer done
+#25 DONE 0.7s
+
+#26 [scheduler] exporting to image
+#26 exporting layers 0.6s done
+#26 writing image sha256:b7077e1e63c1eb3c869022e5e38eb851470d4823262841663085ba61b371566d done
+#26 naming to docker.io/library/kc-hw05-review-scheduler 0.0s done
+#26 DONE 0.7s
+
+#27 [web] resolving provenance for metadata file
+#27 DONE 0.0s
+
+#28 [publisher] resolving provenance for metadata file
+#28 DONE 0.0s
+
+#29 [scheduler] resolving provenance for metadata file
+#29 DONE 0.0s
+
+#30 [migrate] resolving provenance for metadata file
+#30 DONE 0.0s
+
+#31 [consumer] resolving provenance for metadata file
+#31 DONE 0.0s
+ kc-hw05-review-consumer  Built
+ kc-hw05-review-db  Built
+ kc-hw05-review-migrate  Built
+ kc-hw05-review-publisher  Built
+ kc-hw05-review-scheduler  Built
+ kc-hw05-review-web  Built

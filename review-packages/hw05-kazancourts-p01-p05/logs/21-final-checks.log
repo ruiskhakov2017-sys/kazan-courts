@@ -1,0 +1,7 @@
+System check identified no issues (0 silenced).
+No changes detected
+PASS DEBUG and hosts overridden without code edits
+12 objects imported automatically (use -v 2 for details).
+
+PASS test DB removed and test role denied development connection
+PASS real login page HTTP200, username/password fields present

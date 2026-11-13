@@ -1,0 +1,29 @@
+PASS live=200 ready=200 postgres=True kafka=True
+ Container kc-hw05-review-db-1  Stopping
+ Container kc-hw05-review-db-1  Stopped
+PASS live=200 ready=503 postgres=False kafka=True
+ Container kc-hw05-review-db-1  Starting
+ Container kc-hw05-review-db-1  Started
+PASS live=200 ready=200 postgres=True kafka=True
+ Container kc-hw05-review-kafka-1  Stopping
+ Container kc-hw05-review-kafka-1  Stopped
+PASS live=200 ready=503 postgres=True kafka=False
+ Container kc-hw05-review-kafka-1  Starting
+ Container kc-hw05-review-kafka-1  Started
+PASS live=200 ready=200 postgres=True kafka=True
+ Container kc-hw05-review-scheduler-1  Restarting
+ Container kc-hw05-review-web-1  Restarting
+ Container kc-hw05-review-consumer-1  Restarting
+ Container kc-hw05-review-publisher-1  Restarting
+ Container kc-hw05-review-kafka-1  Restarting
+ Container kc-hw05-review-migrate-1  Restarting
+ Container kc-hw05-review-db-1  Restarting
+ Container kc-hw05-review-migrate-1  Started
+ Container kc-hw05-review-db-1  Started
+ Container kc-hw05-review-kafka-1  Started
+ Container kc-hw05-review-scheduler-1  Started
+ Container kc-hw05-review-web-1  Started
+ Container kc-hw05-review-consumer-1  Started
+ Container kc-hw05-review-publisher-1  Started
+PASS live=200 ready=200 postgres=True kafka=True
+PASS dependency failures, recoveries and full restart

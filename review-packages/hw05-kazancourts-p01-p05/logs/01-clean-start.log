@@ -1,0 +1,151 @@
+#1 [internal] load local bake definitions
+#1 reading from stdin 3.64kB done
+#1 DONE 0.0s
+
+#2 [publisher internal] load build definition from Dockerfile
+#2 transferring dockerfile: 766B done
+#2 DONE 0.0s
+
+#3 [consumer internal] load metadata for docker.io/library/python:3.14.8-slim
+#3 DONE 1.0s
+
+#4 [consumer internal] load .dockerignore
+#4 transferring context: 226B done
+#4 DONE 0.0s
+
+#5 [migrate stage-0 1/9] FROM docker.io/library/python:3.14.8-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
+#5 DONE 0.0s
+
+#6 [publisher internal] load build context
+#6 transferring context: 377.61kB 0.0s done
+#6 DONE 0.0s
+
+#7 [migrate stage-0 2/9] WORKDIR /app
+#7 CACHED
+
+#8 [migrate stage-0 3/9] COPY requirements.txt ./
+#8 CACHED
+
+#9 [web stage-0 4/9] RUN --mount=type=secret,id=cloud_ca,target=/run/cloud-ca.pem     if [ -f /run/cloud-ca.pem ]; then export PIP_CERT=/run/cloud-ca.pem; fi;     python -m pip install --no-cache-dir -r requirements.txt     && useradd --create-home --uid 10001 app
+#9 3.348 Collecting Django==5.2.17 (from -r requirements.txt (line 1))
+#9 3.527   Downloading django-5.2.17-py3-none-any.whl.metadata (4.1 kB)
+#9 3.665 Collecting psycopg==3.3.6 (from psycopg[binary]==3.3.6->-r requirements.txt (line 2))
+#9 3.706   Downloading psycopg-3.3.6-py3-none-any.whl.metadata (4.4 kB)
+#9 3.821 Collecting kafka-python==3.0.12 (from -r requirements.txt (line 3))
+#9 3.869   Downloading kafka_python-3.0.12-py3-none-any.whl.metadata (11 kB)
+#9 3.930 Collecting asgiref>=3.8.1 (from Django==5.2.17->-r requirements.txt (line 1))
+#9 3.981   Downloading asgiref-3.13.0-py3-none-any.whl.metadata (12 kB)
+#9 4.037 Collecting sqlparse>=0.3.1 (from Django==5.2.17->-r requirements.txt (line 1))
+#9 4.190   Downloading sqlparse-0.6.1-py3-none-any.whl.metadata (6.9 kB)
+#9 4.413 Collecting psycopg-binary==3.3.6 (from psycopg[binary]==3.3.6->-r requirements.txt (line 2))
+#9 4.532   Downloading psycopg_binary-3.3.6-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+#9 4.581 Downloading django-5.2.17-py3-none-any.whl (8.3 MB)
+#9 5.037    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.3/8.3 MB 21.6 MB/s  0:00:00
+#9 5.088 Downloading psycopg-3.3.6-py3-none-any.whl (215 kB)
+#9 5.137 Downloading kafka_python-3.0.12-py3-none-any.whl (614 kB)
+#9 5.152    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 614.3/614.3 kB 73.5 MB/s  0:00:00
+#9 5.212 Downloading psycopg_binary-3.3.6-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.2 MB)
+#9 5.399    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 27.5 MB/s  0:00:00
+#9 5.456 Downloading asgiref-3.13.0-py3-none-any.whl (27 kB)
+#9 5.579 Downloading sqlparse-0.6.1-py3-none-any.whl (51 kB)
+#9 5.763 Installing collected packages: sqlparse, psycopg-binary, psycopg, kafka-python, asgiref, Django
+#9 8.093 
+#9 8.097 Successfully installed Django-5.2.17 asgiref-3.13.0 kafka-python-3.0.12 psycopg-3.3.6 psycopg-binary-3.3.6 sqlparse-0.6.1
+#9 8.097 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#9 8.100 
+#9 8.100 [notice] A new release of pip is available: 26.2.1 -> 26.3
+#9 8.100 [notice] To update, run: pip install --upgrade pip
+#9 DONE 8.2s
+
+#10 [migrate stage-0 5/9] COPY --chmod=0755 --chown=app:app manage.py test_database.py ./
+#10 DONE 0.7s
+
+#11 [migrate stage-0 6/9] COPY --chmod=0755 --chown=app:app config ./config
+#11 DONE 0.6s
+
+#12 [consumer stage-0 7/9] COPY --chmod=0755 --chown=app:app bookings ./bookings
+#12 DONE 0.7s
+
+#13 [publisher stage-0 8/9] COPY --chmod=0755 --chown=app:app templates ./templates
+#13 DONE 0.7s
+
+#14 [publisher stage-0 9/9] COPY --chmod=0755 --chown=app:app static ./static
+#14 DONE 0.8s
+
+#15 [consumer] exporting to image
+#15 exporting layers
+#15 exporting layers 1.5s done
+#15 writing image sha256:ea2ca3a82e4a7f8da075186b728c2a0286528f3e1631af6bbf904150789fa29e 0.0s done
+#15 naming to docker.io/library/kc-hw05-review-consumer done
+#15 DONE 1.5s
+
+#16 [scheduler] exporting to image
+#16 exporting layers 1.5s done
+#16 writing image sha256:fd408c9d82647e57cadcf11935a3fa8389880f0e7f78f7748b3b7a3ade617bd7 0.0s done
+#16 naming to docker.io/library/kc-hw05-review-scheduler done
+#16 DONE 1.5s
+
+#17 [migrate] exporting to image
+#17 exporting layers 1.5s done
+#17 writing image sha256:85312bbaeab436a56915f47dba7ff2b1211849167f4a24ec7fb7ca0708cb3bdd 0.0s done
+#17 naming to docker.io/library/kc-hw05-review-migrate 0.0s done
+#17 DONE 1.5s
+
+#18 [publisher] exporting to image
+#18 exporting layers 1.5s done
+#18 writing image sha256:19a1433039bf779b8d8d3f15791a9140c2217f6bf8a55e99c31cb22c4d7f7bb3 0.0s done
+#18 naming to docker.io/library/kc-hw05-review-publisher done
+#18 DONE 1.5s
+
+#19 [web] exporting to image
+#19 exporting layers 1.5s done
+#19 writing image sha256:0d84b729c03f1ddfe35a037521efc7af0c097376e385ef147d117a0ec265f8c3 0.0s done
+#19 naming to docker.io/library/kc-hw05-review-web 0.0s done
+#19 DONE 1.5s
+
+#20 [scheduler] resolving provenance for metadata file
+#20 DONE 0.1s
+
+#21 [web] resolving provenance for metadata file
+#21 DONE 0.0s
+
+#22 [migrate] resolving provenance for metadata file
+#22 DONE 0.0s
+
+#23 [publisher] resolving provenance for metadata file
+#23 DONE 0.0s
+
+#24 [consumer] resolving provenance for metadata file
+#24 DONE 0.0s
+ kc-hw05-review-migrate  Built
+ kc-hw05-review-publisher  Built
+ kc-hw05-review-scheduler  Built
+ kc-hw05-review-web  Built
+ kc-hw05-review-consumer  Built
+ Network kc-hw05-review_default  Creating
+ Network kc-hw05-review_default  Created
+ Volume kc-hw05-review_compose_postgres_data  Creating
+ Volume kc-hw05-review_compose_postgres_data  Created
+ Volume kc-hw05-review_compose_kafka_data  Creating
+ Volume kc-hw05-review_compose_kafka_data  Created
+ Container kc-hw05-review-db-1  Creating
+ Container kc-hw05-review-kafka-1  Creating
+ Container kc-hw05-review-kafka-1  Created
+ Container kc-hw05-review-db-1  Created
+ Container kc-hw05-review-migrate-1  Creating
+ Container kc-hw05-review-migrate-1  Created
+ Container kc-hw05-review-consumer-1  Creating
+ Container kc-hw05-review-scheduler-1  Creating
+ Container kc-hw05-review-web-1  Creating
+ Container kc-hw05-review-publisher-1  Creating
+ Container kc-hw05-review-scheduler-1  Created
+ Container kc-hw05-review-consumer-1  Created
+ Container kc-hw05-review-publisher-1  Created
+ Container kc-hw05-review-web-1  Created
+ Container kc-hw05-review-db-1  Starting
+ Container kc-hw05-review-kafka-1  Starting
+ Container kc-hw05-review-kafka-1  Started
+ Container kc-hw05-review-db-1  Started
+ Container kc-hw05-review-db-1  Waiting
+ Container kc-hw05-review-db-1  Error
+dependency failed to start: container kc-hw05-review-db-1 exited (1)

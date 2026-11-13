@@ -1,0 +1,9 @@
+2026-11-13T18:30:34Z
+3bd07ae8c5357faf54e38b89fa921c42b3dbdd8b
+feature/hw05-kazancourts-production
+Docker Compose version v2.40.3
+v24.22.1
+Python 3.14.8
+Django 5.2.17
+psycopg 3.3.6
+kafka-python 3.0.12

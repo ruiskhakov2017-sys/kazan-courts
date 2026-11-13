@@ -1,0 +1,3 @@
+PASS full diff applies to base HEAD, including all new files
+PASS ZIP integrity, manifest and generated-secret exclusion
+/workspace/hw05-review/KazanCourts_HW005_P01-P05_Review.zip 418412 bytes

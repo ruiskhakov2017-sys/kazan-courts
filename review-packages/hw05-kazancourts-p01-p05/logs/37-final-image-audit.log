@@ -1,0 +1,5 @@
+PASS current tracked/untracked nonignored repository files
+PASS diff and captured logs
+PASS image config, history and all saved layers: kc-hw05-review-web
+PASS image config, history and all saved layers: kc-hw05-review-db
+Scope: four generated local credentials; .env excluded intentionally; historical secrets not certified.
