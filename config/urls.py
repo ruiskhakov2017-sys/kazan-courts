@@ -6,8 +6,11 @@ from django.urls import include, path
 from bookings.forms import EmployeeAuthenticationForm
 
 from .views import home
+from .health import live, ready
 
 urlpatterns = [
+    path("health/live", live, name="health_live"),
+    path("health/ready", ready, name="health_ready"),
     path("", home, name="home"),
     path(
         "login/",

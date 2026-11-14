@@ -7,12 +7,24 @@ x-django-environment: &django-environment
   DB_NAME: kazan_courts_dev
   DB_USER: kazan_dev
   DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
-  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
   WEATHER_NETWORK_ENABLED: ${WEATHER_NETWORK_ENABLED:-0}
 
 services:
+  migrate:
+    build: .
+    environment: *django-environment
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    depends_on:
+      db:
+        condition: service_healthy
+
   db:
-    image: postgres:18.6
+    build:
+      context: .
+      dockerfile: docker/postgres/Dockerfile
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
@@ -20,8 +32,7 @@ services:
       DEV_DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
       TEST_DB_PASSWORD: ${TEST_DB_PASSWORD:?Set TEST_DB_PASSWORD}
     volumes:
-      - compose_postgres_data:/var/lib/postgresql
-      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+      - compose_postgres_alpine_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
       interval: 5s
@@ -33,10 +44,19 @@ services:
     build: .
     environment: *django-environment
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${KAZAN_HTTP_PORT:-8000}:8000"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).close()"]
+      interval: 5s
+      timeout: 4s
+      start_period: 10s
+      retries: 12
 
   kafka:
     image: apache/kafka:4.2.2
@@ -68,6 +88,8 @@ services:
     command: ["python", "manage.py", "publish_weather"]
     environment: *django-environment
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       kafka:
@@ -79,6 +101,8 @@ services:
     command: ["python", "manage.py", "consume_weather"]
     environment: *django-environment
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       kafka:
@@ -90,9 +114,11 @@ services:
     command: ["python", "manage.py", "schedule_weather"]
     environment: *django-environment
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
 
 volumes:
-  compose_postgres_data:
+  compose_postgres_alpine_data:
   compose_kafka_data:
