@@ -6,14 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt \
+RUN --mount=type=secret,id=cloud_ca,target=/run/cloud-ca.pem \
+    if [ -f /run/cloud-ca.pem ]; then export PIP_CERT=/run/cloud-ca.pem; fi; \
+    python -m pip install --no-cache-dir -r requirements.txt \
     && useradd --create-home --uid 10001 app
 
-COPY --chown=app:app manage.py test_database.py ./
-COPY --chown=app:app config ./config
-COPY --chown=app:app bookings ./bookings
-COPY --chown=app:app templates ./templates
-COPY --chown=app:app static ./static
+COPY --chmod=0755 --chown=app:app manage.py test_database.py ./
+COPY --chmod=0755 --chown=app:app config ./config
+COPY --chmod=0755 --chown=app:app bookings ./bookings
+COPY --chmod=0755 --chown=app:app templates ./templates
+COPY --chmod=0755 --chown=app:app static ./static
 
 USER app
 

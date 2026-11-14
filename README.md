@@ -500,3 +500,21 @@ CI сохраняет job `django-check`: Python/Django, миграции, Postg
 четыре JavaScript-теста, удаление test database, входная страница и отсутствие SQLite.
 Workflow запускается для PR в main и push в main. Первый запуск в PR №18 прошёл;
 фактические результаты и ограничения приведены в [отчёте Homework 004](docs/homework-04/testing-report.md).
+
+## Homework 005 — Production Practice, этап 1
+
+Актуальный воспроизводимый **локальный** запуск P01–P05 и изолированные проверки:
+[operations](docs/homework-05/operations.md).
+Настройки — [.env.example](.env.example); уникальный локальный `.env` создаёт `python3 scripts/init_local_env.py`.
+Compose теперь выполняет миграции до запуска Django-процессов; старые ручные migrate-команды выше остаются идемпотентными.
+Проверки состояния: `/health/live` — жизнь Django; `/health/ready` — PostgreSQL + Kafka.
+[Матрица P01–P13](docs/homework-05/production-practice.md),
+[фактический отчёт](docs/homework-05/testing-report.md),
+[открытые backup/restore](docs/homework-05/backup-restore.md).
+P06–P13, production deployment, полное обновление/восстановление и итоговая приёмка не заявляются.
+
+### Review P01–P05: CI и PostgreSQL volumes
+
+[Подготовленный облачный CI и статус повторного Review](docs/homework-05/ci-review.md).
+[Риск Debian → Alpine и раздельные volumes](docs/homework-05/postgresql-volume-review.md).
+Новое имя Alpine-volume защищает старые Debian-данные от автоматического подключения. Сам перенос данных не выполнен.
