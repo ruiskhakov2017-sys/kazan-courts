@@ -1,0 +1,162 @@
+#1 [internal] load local bake definitions
+#1 reading from stdin 4.66kB done
+#1 DONE 0.0s
+
+#2 [db internal] load build definition from Dockerfile
+#2 transferring dockerfile: 230B done
+#2 DONE 0.0s
+
+#3 [migrate internal] load build definition from Dockerfile
+#3 transferring dockerfile: 766B done
+#3 DONE 0.0s
+
+#4 [scheduler internal] load metadata for docker.io/library/python:3.14.8-slim
+#4 ...
+
+#5 [db internal] load metadata for docker.io/library/postgres:18.6-alpine
+#5 DONE 0.7s
+
+#6 [db internal] load .dockerignore
+#6 transferring context: 226B done
+#6 DONE 0.0s
+
+#7 [db 1/2] FROM docker.io/library/postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b
+#7 CACHED
+
+#8 [db internal] load build context
+#8 transferring context: 756B done
+#8 DONE 0.0s
+
+#4 [web internal] load metadata for docker.io/library/python:3.14.8-slim
+#4 DONE 0.8s
+
+#6 [migrate internal] load .dockerignore
+#6 transferring context: 226B done
+#6 DONE 0.0s
+
+#9 [web stage-0 1/9] FROM docker.io/library/python:3.14.8-slim@sha256:fbecd461fc72d21b2143c6eaba25143738079154a6d0ea3da3aec724f50eed4a
+#9 DONE 0.0s
+
+#10 [web stage-0 2/9] WORKDIR /app
+#10 CACHED
+
+#11 [consumer internal] load build context
+#11 transferring context: 378.73kB 0.0s done
+#11 DONE 0.0s
+
+#12 [web stage-0 3/9] COPY requirements.txt ./
+#12 DONE 2.7s
+
+#13 [web stage-0 4/9] RUN --mount=type=secret,id=cloud_ca,target=/run/cloud-ca.pem     if [ -f /run/cloud-ca.pem ]; then export PIP_CERT=/run/cloud-ca.pem; fi;     python -m pip install --no-cache-dir -r requirements.txt     && useradd --create-home --uid 10001 app
+#13 ...
+
+#14 [db 2/2] COPY --chmod=0755 docker/postgres/init.sh /docker-entrypoint-initdb.d/01-init.sh
+#14 DONE 3.3s
+
+#15 [db] exporting to image
+#15 exporting layers
+#15 exporting layers 0.7s done
+#15 writing image sha256:61039b0ad850788e19993ee228dae2b7085782a216ac08dfcad7c6fe7a62f062 done
+#15 naming to docker.io/library/kc-hw05-ci-codex-20261114-b-db done
+#15 DONE 0.7s
+
+#16 [db] resolving provenance for metadata file
+#16 DONE 0.0s
+
+#13 [web stage-0 4/9] RUN --mount=type=secret,id=cloud_ca,target=/run/cloud-ca.pem     if [ -f /run/cloud-ca.pem ]; then export PIP_CERT=/run/cloud-ca.pem; fi;     python -m pip install --no-cache-dir -r requirements.txt     && useradd --create-home --uid 10001 app
+#13 4.174 Collecting Django==5.2.17 (from -r requirements.txt (line 1))
+#13 4.283   Downloading django-5.2.17-py3-none-any.whl.metadata (4.1 kB)
+#13 4.421 Collecting psycopg==3.3.6 (from psycopg[binary]==3.3.6->-r requirements.txt (line 2))
+#13 4.547   Downloading psycopg-3.3.6-py3-none-any.whl.metadata (4.4 kB)
+#13 4.654 Collecting kafka-python==3.0.12 (from -r requirements.txt (line 3))
+#13 4.690   Downloading kafka_python-3.0.12-py3-none-any.whl.metadata (11 kB)
+#13 4.762 Collecting asgiref>=3.8.1 (from Django==5.2.17->-r requirements.txt (line 1))
+#13 4.863   Downloading asgiref-3.13.0-py3-none-any.whl.metadata (12 kB)
+#13 4.967 Collecting sqlparse>=0.3.1 (from Django==5.2.17->-r requirements.txt (line 1))
+#13 5.013   Downloading sqlparse-0.6.1-py3-none-any.whl.metadata (6.9 kB)
+#13 5.246 Collecting psycopg-binary==3.3.6 (from psycopg[binary]==3.3.6->-r requirements.txt (line 2))
+#13 5.280   Downloading psycopg_binary-3.3.6-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+#13 5.358 Downloading django-5.2.17-py3-none-any.whl (8.3 MB)
+#13 5.624    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.3/8.3 MB 33.9 MB/s  0:00:00
+#13 5.656 Downloading psycopg-3.3.6-py3-none-any.whl (215 kB)
+#13 5.724 Downloading kafka_python-3.0.12-py3-none-any.whl (614 kB)
+#13 5.767    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 614.3/614.3 kB 30.1 MB/s  0:00:00
+#13 5.811 Downloading psycopg_binary-3.3.6-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.2 MB)
+#13 5.964    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.2/5.2 MB 35.8 MB/s  0:00:00
+#13 5.997 Downloading asgiref-3.13.0-py3-none-any.whl (27 kB)
+#13 6.035 Downloading sqlparse-0.6.1-py3-none-any.whl (51 kB)
+#13 6.206 Installing collected packages: sqlparse, psycopg-binary, psycopg, kafka-python, asgiref, Django
+#13 11.41 
+#13 11.41 Successfully installed Django-5.2.17 asgiref-3.13.0 kafka-python-3.0.12 psycopg-3.3.6 psycopg-binary-3.3.6 sqlparse-0.6.1
+#13 11.41 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#13 11.41 
+#13 11.41 [notice] A new release of pip is available: 26.2.1 -> 26.3
+#13 11.41 [notice] To update, run: pip install --upgrade pip
+#13 DONE 11.5s
+
+#17 [scheduler stage-0 5/9] COPY --chmod=0755 --chown=app:app manage.py test_database.py ./
+#17 DONE 3.2s
+
+#18 [web stage-0 6/9] COPY --chmod=0755 --chown=app:app config ./config
+#18 DONE 4.3s
+
+#19 [migrate stage-0 7/9] COPY --chmod=0755 --chown=app:app bookings ./bookings
+#19 DONE 4.1s
+
+#20 [scheduler stage-0 8/9] COPY --chmod=0755 --chown=app:app templates ./templates
+#20 DONE 1.9s
+
+#21 [migrate stage-0 9/9] COPY --chmod=0755 --chown=app:app static ./static
+#21 DONE 1.5s
+
+#22 [publisher] exporting to image
+#22 exporting layers
+#22 exporting layers 1.7s done
+#22 writing image sha256:843630d1acf0b4f308db75aa1f98dbf1bc7352a388b401367c08e42c3c308f12 done
+#22 naming to docker.io/library/kc-hw05-ci-codex-20261114-b-publisher done
+#22 DONE 1.8s
+
+#23 [scheduler] exporting to image
+#23 exporting layers 1.7s done
+#23 writing image sha256:90345b1bbb617dce6096a8b0ad13390eeec5425cbc8389ce51d2df68bc714880 done
+#23 naming to docker.io/library/kc-hw05-ci-codex-20261114-b-scheduler 0.0s done
+#23 DONE 1.8s
+
+#24 [web] exporting to image
+#24 exporting layers 1.7s done
+#24 writing image sha256:b016dc1f7f259eabe7183bea5d3aa8b9a3e120ad79597979189e5dddb8f79b71 done
+#24 naming to docker.io/library/kc-hw05-ci-codex-20261114-b-web done
+#24 DONE 1.8s
+
+#25 [consumer] exporting to image
+#25 exporting layers 1.7s done
+#25 writing image sha256:a663e8531787053393cb4f89719b84375cabb02cb230ae81080a7ba5021d2a3c done
+#25 naming to docker.io/library/kc-hw05-ci-codex-20261114-b-consumer 0.0s done
+#25 DONE 1.8s
+
+#26 [migrate] exporting to image
+#26 exporting layers 1.7s done
+#26 writing image sha256:e66de48229e12697ec950669404f6bda0749901e88db65f50fca6ca5a610747e done
+#26 naming to docker.io/library/kc-hw05-ci-codex-20261114-b-migrate done
+#26 DONE 1.8s
+
+#27 [migrate] resolving provenance for metadata file
+#27 DONE 0.0s
+
+#28 [publisher] resolving provenance for metadata file
+#28 DONE 0.0s
+
+#29 [scheduler] resolving provenance for metadata file
+#29 DONE 0.0s
+
+#30 [web] resolving provenance for metadata file
+#30 DONE 0.0s
+
+#31 [consumer] resolving provenance for metadata file
+#31 DONE 0.0s
+ kc-hw05-ci-codex-20261114-b-migrate  Built
+ kc-hw05-ci-codex-20261114-b-publisher  Built
+ kc-hw05-ci-codex-20261114-b-scheduler  Built
+ kc-hw05-ci-codex-20261114-b-web  Built
+ kc-hw05-ci-codex-20261114-b-consumer  Built
+ kc-hw05-ci-codex-20261114-b-db  Built

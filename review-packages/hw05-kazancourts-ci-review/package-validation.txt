@@ -1,0 +1,18 @@
+PASS full diff applies to unchanged base HEAD
+PASS ZIP CRC, manifest hashes, local credential exclusion
+Changed since first review: 14 files
+.github/workflows/ci.yml
+README.md
+compose.yaml
+config/ci_runner.py
+docs/homework-05/ci-review.md
+docs/homework-05/operations.md
+docs/homework-05/postgresql-volume-review.md
+docs/homework-05/production-practice.md
+docs/homework-05/testing-report.md
+scripts/audit_local_secrets.py
+scripts/check_production.py
+scripts/ci_production.py
+scripts/init_local_env.py
+scripts/test_ci_production.py
+/workspace/hw05-ci-review/KazanCourts_HW005_P01-P05_CI_Review.zip 466033 bytes

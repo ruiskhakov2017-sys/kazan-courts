@@ -1,0 +1,2770 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 6877bbd..0a71e38 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,7 +4,8 @@ on:
+   pull_request:
+     branches: [main]
+   push:
+-    branches: [main]
++    branches: [main, feature/hw05-kazancourts-production]
++  workflow_dispatch:
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+@@ -16,189 +17,88 @@ permissions:
+ jobs:
+   django-check:
+     name: django-check
++    # GitHub-hosted only: no self-hosted, workstation or external service.
+     runs-on: ubuntu-24.04
+-    timeout-minutes: 15
+-
+-    services:
+-      postgres:
+-        image: postgres:18.6
+-        env:
+-          POSTGRES_USER: postgres
+-          POSTGRES_DB: postgres
+-          # Used only by this temporary CI service.
+-          POSTGRES_PASSWORD: ci-bootstrap-only
+-        ports:
+-          - "127.0.0.1:5432:5432"
+-        options: >-
+-          --health-cmd "pg_isready -U postgres -d postgres"
+-          --health-interval 5s
+-          --health-timeout 5s
+-          --health-retries 10
+-
+-      kafka:
+-        image: apache/kafka:4.2.2
+-        env:
+-          KAFKA_NODE_ID: 1
+-          KAFKA_PROCESS_ROLES: broker,controller
+-          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+-          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+-          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@127.0.0.1:9093
+-          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+-          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+-          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+-          KAFKA_NUM_PARTITIONS: 1
+-          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+-        ports:
+-          - "127.0.0.1:9092:9092"
+-        options: >-
+-          --health-cmd "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+-          --health-interval 10s
+-          --health-timeout 30s
+-          --health-retries 18
+-          --health-start-period 30s
+-
++    timeout-minutes: 40
+     env:
+-      DB_HOST: "127.0.0.1"
+-      DB_PORT: "5432"
+-      DB_NAME: postgres
+-      DB_USER: kazan_test
+-      KAFKA_BOOTSTRAP_SERVERS: "127.0.0.1:9092"
+-      KAFKA_INTEGRATION: "1"
++      COMPOSE_PROJECT_NAME: kc-hw05-ci-${{ github.run_id }}-${{ github.run_attempt }}
+       WEATHER_NETWORK_ENABLED: "0"
+-
+     steps:
+       - name: Checkout
+         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+         with:
+           persist-credentials: false
+ 
+-      - name: Set up Python
+-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+-        with:
+-          python-version: "3.14.8"
+-          cache: pip
+-          cache-dependency-path: requirements.txt
+-
+       - name: Set up Node.js
+         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+         with:
+           node-version: "24.13.0"
+ 
+-      - name: Test operator interface
+-        run: node --test bookings/tests/operator_queue_ui.test.js
+-
+-      - name: Install dependencies
+-        run: |
+-          python -m pip install -r requirements.txt
+-          python -m pip check
+-
+-      - name: Prepare and verify Kafka topic
++      - name: Verify CI result gates
+         run: |
+-          docker exec "${{ job.services.kafka.id }}" /opt/kafka/bin/kafka-topics.sh \
+-            --bootstrap-server 127.0.0.1:9092 --create --if-not-exists \
+-            --topic booking.weather.v1 --partitions 1 --replication-factor 1
+-          python - <<'PY'
+-          import os
+-          from kafka import KafkaConsumer
+-
+-          consumer = KafkaConsumer(bootstrap_servers=os.environ["KAFKA_BOOTSTRAP_SERVERS"],
+-                                   request_timeout_ms=10000)
+-          try:
+-              partitions = consumer.partitions_for_topic("booking.weather.v1")
+-              if partitions != {0}:
+-                  raise SystemExit(f"Kafka topic must have one partition: {partitions}")
+-              print("Runner connected to Kafka; booking.weather.v1 has one partition")
+-          finally:
+-              consumer.close()
++          python3 - <<'PY'
++          import unittest
++          suite = unittest.defaultTestLoader.discover('scripts', pattern='test_ci_production.py')
++          discovered = suite.countTestCases()
++          result = unittest.TextTestRunner(verbosity=2).run(suite)
++          complete = discovered >= 12 and result.testsRun == discovered
++          passed = result.wasSuccessful() and not (result.skipped or result.expectedFailures)
++          raise SystemExit(0 if complete and passed else 1)
+           PY
+ 
+-      - name: Create CI test role
++      - name: Prepare new isolated Compose project
++        id: prepare
++        run: >-
++          python3 scripts/ci_production.py prepare
++          --state-dir "$RUNNER_TEMP/kazan-private"
++          --artifacts "$RUNNER_TEMP/kazan-safe-results"
++
++      - name: Build, run, fail dependencies and test P01-P05
++        id: tests
++        timeout-minutes: 23
++        run: >-
++          python3 scripts/ci_production.py run
++          --state-dir "$RUNNER_TEMP/kazan-private"
++          --artifacts "$RUNNER_TEMP/kazan-safe-results"
++
++      - name: Audit secrets and clean only this test project
++        id: finalize
++        if: always()
++        timeout-minutes: 12
++        run: >-
++          python3 scripts/ci_production.py finalize
++          --state-dir "$RUNNER_TEMP/kazan-private"
++          --artifacts "$RUNNER_TEMP/kazan-safe-results"
++
++      - name: Explicit PASS or FAIL summary
++        if: always()
+         env:
+-          POSTGRES_PASSWORD: ci-bootstrap-only
++          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
++          TESTS_OUTCOME: ${{ steps.tests.outcome }}
++          FINALIZE_OUTCOME: ${{ steps.finalize.outcome }}
+         run: |
+-          python - <<'PY'
+-          import os
+-          import secrets
+-
+-          import psycopg
+-          from psycopg import sql
+-
+-          password = secrets.token_urlsafe(32)
+-          print(f"::add-mask::{password}", flush=True)
+-          with psycopg.connect(
+-              host=os.environ["DB_HOST"],
+-              port=os.environ["DB_PORT"],
+-              dbname="postgres",
+-              user="postgres",
+-              password=os.environ["POSTGRES_PASSWORD"],
+-              autocommit=True,
+-          ) as connection:
+-              connection.execute(
+-                  sql.SQL(
+-                      "CREATE ROLE kazan_test LOGIN NOSUPERUSER NOCREATEROLE "
+-                      "CREATEDB NOREPLICATION NOBYPASSRLS PASSWORD {}"
+-                  ).format(sql.Literal(password))
+-              )
+-
+-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+-              environment.write(f"DB_PASSWORD={password}\n")
+-          print("CI test role created")
+-          PY
+-
+-      - name: Check Python, Django, database and home page
+-        run: |
+-          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+-          python -m compileall -q manage.py config bookings test_database.py
+-          python manage.py check
+-          python manage.py makemigrations --check --dry-run
+-          set -o pipefail
+-          python manage.py test test_database bookings --verbosity 2 --noinput 2>&1 | tee "$RUNNER_TEMP/django-tests.log"
+-          python - <<'PY'
++          python3 - <<'PY'
+           import os
+           from pathlib import Path
+-
+-          log = (Path(os.environ["RUNNER_TEMP"]) / "django-tests.log").read_text(encoding="utf-8")
+-          names = (
+-              "test_invalid_record_is_redelivered_and_blocks_later_message",
+-              "test_forecast_outbox_real_broker_consumer_and_redelivery",
+-          )
+-          for name in names:
+-              marker = f"{name} (bookings.tests.test_kafka_pipeline.KafkaIntegrationTests.{name}) ... ok"
+-              if marker not in log:
+-                  raise SystemExit(f"Kafka integration test did not pass: {name}")
+-          print("Both real Kafka integration tests passed")
++          destination = Path(os.environ['RUNNER_TEMP']) / 'kazan-safe-results'
++          destination.mkdir(exist_ok=True)
++          passed = all(os.environ[name] == 'success' for name in
++                       ('PREPARE_OUTCOME', 'TESTS_OUTCOME', 'FINALIZE_OUTCOME'))
++          status = 'PASS' if passed else 'FAIL'
++          with (destination / 'summary.txt').open('a') as output:
++              output.write(f'{status} overall CI\n')
++          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
++              output.write('### KazanCourts P01-P05: ' + status + '\n\n')
++              output.write('```text\n' + (destination / 'summary.txt').read_text() + '```\n')
++          print(status + ' overall CI')
++          raise SystemExit(0 if passed else 1)
+           PY
+-          python - <<'PY'
+-          import os
+-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+-
+-          import django
+-          django.setup()
+-
+-          from django.db import connection
+-          with connection.cursor() as cursor:
+-              cursor.execute(
+-                  "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = %s)",
+-                  ["test_kazan_courts"],
+-              )
+-              if cursor.fetchone()[0]:
+-                  raise SystemExit("Test database still exists after the test run")
+-          print("Test database removed: OK")
+-
+-          from django.test import Client
+-          client = Client()
+-          response = client.get("/", HTTP_HOST="localhost")
+-          if response.status_code != 302 or response.url != "/login/?next=/":
+-              raise SystemExit("Anonymous GET / did not redirect to login")
+-          response = client.get("/login/", HTTP_HOST="localhost")
+ 
+-          if response.status_code != 200:
+-              raise SystemExit(f"GET /login/ returned {response.status_code}")
+-          if b"<h1>KazanCourts</h1>" not in response.content:
+-              raise SystemExit("Expected heading is missing")
+-
+-          print("Anonymous GET /: login redirect; GET /login/: HTTP 200")
+-          PY
+-          test ! -e db.sqlite3
++      - name: Upload audited results only
++        if: always()
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: kazancourts-p01-p05-${{ github.run_id }}-${{ github.run_attempt }}
++          path: ${{ runner.temp }}/kazan-safe-results/
++          if-no-files-found: error
++          retention-days: 14
+diff --git a/.gitignore b/.gitignore
+index 0ef4d47..64958dd 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -14,3 +14,5 @@ venv/
+ .env.*
+ *.pem
+ *.key
++
++!.env.example
+diff --git a/Dockerfile b/Dockerfile
+index e83bf60..f9f70cd 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -6,14 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
+ WORKDIR /app
+ 
+ COPY requirements.txt ./
+-RUN python -m pip install --no-cache-dir -r requirements.txt \
++RUN --mount=type=secret,id=cloud_ca,target=/run/cloud-ca.pem \
++    if [ -f /run/cloud-ca.pem ]; then export PIP_CERT=/run/cloud-ca.pem; fi; \
++    python -m pip install --no-cache-dir -r requirements.txt \
+     && useradd --create-home --uid 10001 app
+ 
+-COPY --chown=app:app manage.py test_database.py ./
+-COPY --chown=app:app config ./config
+-COPY --chown=app:app bookings ./bookings
+-COPY --chown=app:app templates ./templates
+-COPY --chown=app:app static ./static
++COPY --chmod=0755 --chown=app:app manage.py test_database.py ./
++COPY --chmod=0755 --chown=app:app config ./config
++COPY --chmod=0755 --chown=app:app bookings ./bookings
++COPY --chmod=0755 --chown=app:app templates ./templates
++COPY --chmod=0755 --chown=app:app static ./static
+ 
+ USER app
+ 
+diff --git a/README.md b/README.md
+index bf7d624..bbe1980 100644
+--- a/README.md
++++ b/README.md
+@@ -500,3 +500,21 @@ CI сохраняет job `django-check`: Python/Django, миграции, Postg
+ четыре JavaScript-теста, удаление test database, входная страница и отсутствие SQLite.
+ Workflow запускается для PR в main и push в main. Первый запуск в PR №18 прошёл;
+ фактические результаты и ограничения приведены в [отчёте Homework 004](docs/homework-04/testing-report.md).
++
++## Homework 005 — Production Practice, этап 1
++
++Актуальный воспроизводимый **локальный** запуск P01–P05 и изолированные проверки:
++[operations](docs/homework-05/operations.md).
++Настройки — [.env.example](.env.example); уникальный локальный `.env` создаёт `python3 scripts/init_local_env.py`.
++Compose теперь выполняет миграции до запуска Django-процессов; старые ручные migrate-команды выше остаются идемпотентными.
++Проверки состояния: `/health/live` — жизнь Django; `/health/ready` — PostgreSQL + Kafka.
++[Матрица P01–P13](docs/homework-05/production-practice.md),
++[фактический отчёт](docs/homework-05/testing-report.md),
++[открытые backup/restore](docs/homework-05/backup-restore.md).
++P06–P13, production deployment, полное обновление/восстановление и итоговая приёмка не заявляются.
++
++### Review P01–P05: CI и PostgreSQL volumes
++
++[Подготовленный облачный CI и статус повторного Review](docs/homework-05/ci-review.md).
++[Риск Debian → Alpine и раздельные volumes](docs/homework-05/postgresql-volume-review.md).
++Новое имя Alpine-volume защищает старые Debian-данные от автоматического подключения. Сам перенос данных не выполнен.
+diff --git a/compose.yaml b/compose.yaml
+index ebef978..d1282f8 100644
+--- a/compose.yaml
++++ b/compose.yaml
+@@ -7,12 +7,24 @@ x-django-environment: &django-environment
+   DB_NAME: kazan_courts_dev
+   DB_USER: kazan_dev
+   DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
+-  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
++  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
++  DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
++  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+   WEATHER_NETWORK_ENABLED: ${WEATHER_NETWORK_ENABLED:-0}
+ 
+ services:
++  migrate:
++    build: .
++    environment: *django-environment
++    command: ["python", "manage.py", "migrate", "--noinput"]
++    depends_on:
++      db:
++        condition: service_healthy
++
+   db:
+-    image: postgres:18.6
++    build:
++      context: .
++      dockerfile: docker/postgres/Dockerfile
+     environment:
+       POSTGRES_USER: postgres
+       POSTGRES_DB: postgres
+@@ -20,8 +32,7 @@ services:
+       DEV_DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
+       TEST_DB_PASSWORD: ${TEST_DB_PASSWORD:?Set TEST_DB_PASSWORD}
+     volumes:
+-      - compose_postgres_data:/var/lib/postgresql
+-      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
++      - compose_postgres_alpine_data:/var/lib/postgresql
+     healthcheck:
+       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
+       interval: 5s
+@@ -33,11 +44,20 @@ services:
+     build: .
+     environment: *django-environment
+     ports:
+-      - "127.0.0.1:8000:8000"
++      - "127.0.0.1:${KAZAN_HTTP_PORT:-8000}:8000"
+     depends_on:
++      migrate:
++        condition: service_completed_successfully
+       db:
+         condition: service_healthy
+ 
++    healthcheck:
++      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).close()"]
++      interval: 5s
++      timeout: 4s
++      start_period: 10s
++      retries: 12
++
+   kafka:
+     image: apache/kafka:4.2.2
+     environment:
+@@ -68,6 +88,8 @@ services:
+     command: ["python", "manage.py", "publish_weather"]
+     environment: *django-environment
+     depends_on:
++      migrate:
++        condition: service_completed_successfully
+       db:
+         condition: service_healthy
+       kafka:
+@@ -79,6 +101,8 @@ services:
+     command: ["python", "manage.py", "consume_weather"]
+     environment: *django-environment
+     depends_on:
++      migrate:
++        condition: service_completed_successfully
+       db:
+         condition: service_healthy
+       kafka:
+@@ -90,9 +114,11 @@ services:
+     command: ["python", "manage.py", "schedule_weather"]
+     environment: *django-environment
+     depends_on:
++      migrate:
++        condition: service_completed_successfully
+       db:
+         condition: service_healthy
+ 
+ volumes:
+-  compose_postgres_data:
++  compose_postgres_alpine_data:
+   compose_kafka_data:
+diff --git a/config/settings.py b/config/settings.py
+index 0493bd0..4735f7b 100644
+--- a/config/settings.py
++++ b/config/settings.py
+@@ -11,8 +11,10 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
+ if not SECRET_KEY:
+     raise ImproperlyConfigured("Set DJANGO_SECRET_KEY before running Django.")
+ 
+-DEBUG = True
+-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
++DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
++ALLOWED_HOSTS = [host.strip() for host in os.environ.get(
++    "DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if host.strip()]
++KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+ 
+ INSTALLED_APPS = [
+     "django.contrib.contenttypes",
+@@ -59,6 +61,7 @@ DATABASES = {
+         "USER": os.environ["DB_USER"],
+         "PASSWORD": os.environ["DB_PASSWORD"],
+         "TEST": {"NAME": "test_kazan_courts"},
++        "OPTIONS": {"connect_timeout": 2},
+     }
+ }
+ 
+diff --git a/config/urls.py b/config/urls.py
+index cfd449a..7513b1a 100644
+--- a/config/urls.py
++++ b/config/urls.py
+@@ -6,8 +6,11 @@ from django.urls import include, path
+ from bookings.forms import EmployeeAuthenticationForm
+ 
+ from .views import home
++from .health import live, ready
+ 
+ urlpatterns = [
++    path("health/live", live, name="health_live"),
++    path("health/ready", ready, name="health_ready"),
+     path("", home, name="home"),
+     path(
+         "login/",
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..5c331fe
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,11 @@
++# Local development only. Run python3 scripts/init_local_env.py once.
++# Never replace credentials while retaining an existing PostgreSQL volume.
++POSTGRES_PASSWORD=GENERATE_LOCALLY
++DEV_DB_PASSWORD=GENERATE_LOCALLY
++TEST_DB_PASSWORD=GENERATE_LOCALLY
++DJANGO_SECRET_KEY=GENERATE_LOCALLY
++DJANGO_DEBUG=1
++DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
++KAZAN_HTTP_PORT=8000
++KAFKA_BOOTSTRAP_SERVERS=kafka:9092
++WEATHER_NETWORK_ENABLED=0
+diff --git a/config/ci_runner.py b/config/ci_runner.py
+new file mode 100644
+index 0000000..6ceebe5
+--- /dev/null
++++ b/config/ci_runner.py
+@@ -0,0 +1,28 @@
++"""Machine-readable evidence for the isolated Compose CI suite."""
++import json
++import os
++from pathlib import Path
++from django.test.runner import DiscoverRunner
++
++
++class CIResultRunner(DiscoverRunner):
++    def run_suite(self, suite, **kwargs):
++        def ids(item):
++            if hasattr(item, 'id'):
++                return [item.id()]
++            return [name for child in item for name in ids(child)]
++        self.discovered_ids = ids(suite)
++        return super().run_suite(suite, **kwargs)
++
++    def suite_result(self, suite, result, **kwargs):
++        data = {
++            'discovered_ids': self.discovered_ids,
++            'tests_run': result.testsRun,
++            'failures': len(result.failures),
++            'errors': len(result.errors),
++            'skipped': len(result.skipped),
++            'expected_failures': len(result.expectedFailures),
++            'unexpected_successes': len(result.unexpectedSuccesses),
++        }
++        Path(os.environ['KAZAN_TEST_RESULTS']).write_text(json.dumps(data), encoding='utf-8')
++        return super().suite_result(suite, result, **kwargs)
+diff --git a/config/health.py b/config/health.py
+new file mode 100644
+index 0000000..1db4932
+--- /dev/null
++++ b/config/health.py
+@@ -0,0 +1,52 @@
++"""Process liveness and dependency readiness; no business writes or live weather."""
++from django.conf import settings
++from django.db import DatabaseError, connection
++from django.http import JsonResponse
++from django.views.decorators.cache import never_cache
++from django.views.decorators.http import require_safe
++from kafka import KafkaAdminClient
++from kafka.errors import KafkaError
++
++
++def postgres_available():
++    try:
++        with connection.cursor() as cursor:
++            cursor.execute('SELECT 1')
++            return cursor.fetchone() == (1,)
++    except DatabaseError:
++        connection.close()
++        return False
++
++
++def kafka_available():
++    client = None
++    try:
++        client = KafkaAdminClient(
++            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
++            client_id='kazancourts-readiness',
++            request_timeout_ms=1500,
++            bootstrap_timeout_ms=1500,
++        )
++        return bool(client.describe_cluster().get('brokers'))
++    except (KafkaError, OSError):
++        return False
++    finally:
++        if client is not None:
++            client.close()
++
++
++@never_cache
++@require_safe
++def live(request):
++    return JsonResponse({'status': 'live'})
++
++
++@never_cache
++@require_safe
++def ready(request):
++    # Conservative full-system policy: DB and Kafka are both required. Outbox
++    # lets bookings survive a broker outage; this probe does not block the API.
++    checks = {'postgres': postgres_available(), 'kafka': kafka_available()}
++    available = all(checks.values())
++    return JsonResponse({'status': 'ready' if available else 'not_ready', 'checks': checks},
++                        status=200 if available else 503)
+diff --git a/config/test_health.py b/config/test_health.py
+new file mode 100644
+index 0000000..85c2f81
+--- /dev/null
++++ b/config/test_health.py
+@@ -0,0 +1,48 @@
++from unittest.mock import patch
++
++from django.db import OperationalError
++from django.test import SimpleTestCase
++from kafka.errors import KafkaError
++
++from .health import kafka_available, postgres_available
++
++
++class HealthTests(SimpleTestCase):
++    def test_live_never_touches_dependencies(self):
++        with patch('config.health.postgres_available', side_effect=AssertionError), patch(
++                'config.health.kafka_available', side_effect=AssertionError):
++            response = self.client.get('/health/live')
++        self.assertEqual(response.status_code, 200)
++        self.assertEqual(response.json(), {'status': 'live'})
++        self.assertIn('no-store', response.headers['Cache-Control'])
++
++    def test_readiness_matrix_and_recovery(self):
++        for pg, kafka in [(True, True), (False, True), (True, False), (False, False), (True, True)]:
++            with self.subTest(postgres=pg, kafka=kafka), patch(
++                    'config.health.postgres_available', return_value=pg), patch(
++                    'config.health.kafka_available', return_value=kafka):
++                response = self.client.get('/health/ready')
++                self.assertEqual(response.status_code, 200 if pg and kafka else 503)
++                self.assertEqual(response.json()['checks'], {'postgres': pg, 'kafka': kafka})
++                self.assertIn('no-store', response.headers['Cache-Control'])
++
++    def test_probes_are_read_only(self):
++        for path in ['/health/live', '/health/ready']:
++            self.assertEqual(self.client.post(path).status_code, 405)
++
++    def test_postgres_failure_is_sanitized(self):
++        with patch('config.health.connection') as db:
++            db.cursor.side_effect = OperationalError('sensitive details')
++            self.assertFalse(postgres_available())
++            db.close.assert_called_once()
++
++    def test_broker_failure_is_sanitized(self):
++        with patch('config.health.KafkaAdminClient', side_effect=KafkaError):
++            self.assertFalse(kafka_available())
++
++    def test_broker_client_is_closed(self):
++        with patch('config.health.KafkaAdminClient') as factory:
++            client = factory.return_value
++            client.describe_cluster.return_value = {'brokers': [{'node_id': 1}]}
++            self.assertTrue(kafka_available())
++            client.close.assert_called_once()
+diff --git a/docker/postgres/Dockerfile b/docker/postgres/Dockerfile
+new file mode 100644
+index 0000000..3817556
+--- /dev/null
++++ b/docker/postgres/Dockerfile
+@@ -0,0 +1,3 @@
++FROM postgres:18.6-alpine
++# Bind-mounted init scripts can be unreadable to postgres after a private checkout.
++COPY --chmod=0755 docker/postgres/init.sh /docker-entrypoint-initdb.d/01-init.sh
+diff --git a/docs/homework-05/backup-restore.md b/docs/homework-05/backup-restore.md
+new file mode 100644
+index 0000000..101ba85
+--- /dev/null
++++ b/docs/homework-05/backup-restore.md
+@@ -0,0 +1,6 @@
++# Backup / restore — открытый артефакт
++
++P11/P12: **Not Run**, вне разрешённого этапа P01–P05.
++Резервная копия и проверенное восстановление не выполнялись. Named volumes и restart не заменяют backup.
++При отдельном поручении здесь должны появиться фактические команды, версии, местоположение копии, схема/контрольные данные и результат restore в отдельную чистую учебную БД.
++Полная Production Practice и готовность к аварийному восстановлению не заявляются.
+diff --git a/docs/homework-05/ci-review.md b/docs/homework-05/ci-review.md
+new file mode 100644
+index 0000000..519a1ce
+--- /dev/null
++++ b/docs/homework-05/ci-review.md
+@@ -0,0 +1,42 @@
++# Повторный Review P01–P05: облачный CI и PostgreSQL
++
++Дата: 14 ноября 2026. Работа в прежнем worktree и ветке `feature/hw05-kazancourts-production`.
++Исходные незакоммиченные изменения сохранены; перед работой создана отдельная копия исходников без `.env`.
++По сообщению пользователя первоначальный независимый Review реализации пройден с двумя открытыми вопросами. Этот документ отвечает на них; повторная независимая приёмка ещё не проведена.
++
++## Изменения
++
++- Существующий job `django-check` теперь проверяет фактический Compose вместо другого стенда из Actions services. Используется только GitHub-hosted `ubuntu-24.04`. Оригинальные закреплённые checkout/setup-node сохранены; upload-artifact также закреплён SHA.
++- `prepare` отказывается использовать существующие project resources/images/state. Создаёт отдельный приватный env-файл, не трогает локальный `.env`; secrets не записываются в GitHub variables или вывод команд.
++- `run`: build `--pull --no-cache`, up/wait, проверка каждого сервиса и exit0 миграций, Django check/схема, реальные DB/Kafka stop/recover, down/up с сохранением тестовых данных, затем остановка workers для тестов Kafka, полный Django и JS наборы.
++- Новый `config.ci_runner.CIResultRunner` сохраняет JSON с обнаруженными test IDs, фактическим числом выполнений и всеми исходами. Проверка требует не менее 221 теста, соответствия discovery/execution, присутствия обоих real Kafka tests, отсутствия failures/errors/skips/expected failures/unexpected successes. При добавлении тестов число берётся из discovery и JSON. Для TAP JavaScript требуется не менее 4 тестов, все pass, без skipped/cancelled/todo.
++- `always()` выполняет аудит временных секретов, остановку и очистку только этого нового project. Проверяет отсутствие его containers/networks/volumes/local build images. Приватный env и raw-логи удаляются. Сторонние volumes/images не удаляются.
++- Только аудированные логи/JSON попадают в artifact. В случае утечки или ошибки аудита/cleanup подробные данные не выгружаются, остаётся фиксированный summary FAIL. Exit status тестовой фазы не подменяется успешным cleanup. Сводка workflow учитывает outcome всех фаз.
++- Alpine PostgreSQL использует отдельный volume key; [минимальное решение и риск](postgresql-volume-review.md). Старые volumes не подключались и не удалялись.
++
++## Политика проверки секретов
++
++Все четыре временных значения проверяются без маскирования в исходных raw-результатах, исходниках/diff и config/history/**всех слоях всех образов** этого проекта, включая неизменённый официальный Kafka.
++Проверка идёт до публикации результатов. Если найдено значение, прогон FAIL, даже если последующая redaction удаляет его из безопасной сводки.
++
++Для собственного Django/DB образов, кода и логов также выполняется поиск распространённых credential/key-сигнатур. Официальный неизменённый `apache/kafka:4.2.2` содержит встроенный PEM-материал в `libgnutls.so`; это отдельно воспроизведено аудитом upstream image. Для этого образа применяется явный режим `--temporary-secrets-only-image`: он **сохраняет полный поиск генерируемых CI-значений**, но не заявляет отсутствие всех upstream test-key fixtures. Образ Kafka и механизмы Kafka не изменены. Это ограничение проверки, а не скрытый PASS общего security audit.
++
++Негативные проверки подтверждают: значения временного секрета даже в таком upstream image дают FAIL; leaked raw-лог не попадает в artifact; отсутствие owner marker запрещает cleanup; пропущенные/нулевые/неполные тесты и отсутствие Kafka tests не проходят.
++
++## Проверено в Codex
++
++Статусы окончательного прогона и точные числа находятся в приложенных безопасных результатах. GitHub YAML проверен `actionlint` 1.7.7 (официальный архив проверен по SHA256). Контракты конфигурации проверяют GitHub-hosted runner и раздельные volumes. Python helper syntax и отрицательные проверки результата выполнены локально в облаке.
++
++Два запуска оркестратора разделены: первый выполнил Compose/221 Django/4 JS, но корректно завершился **FAIL** на общей сигнатуре в upstream Kafka; cleanup прошёл, подробные raw-логи не выгружены. После уточнения явного scope upstream image выполнен новый полный прогон на свежем project. Его финальный статус фиксируется в [testing-report](testing-report.md).
++Codex-прогон использует только дополнительный build-secret CA для облачного прокси. GitHub-hosted runner не нуждается в этом cloud override. Прямое исполнение Python оркестратора в Codex не является запуском GitHub Actions.
++
++## Проверено в GitHub Actions
++
++**Not Run для этой версии изменений.** Нет run URL/commit с данным workflow, artifact или подтверждённого GitHub-hosted результата. Commit/push/PR/merge/deployment и workflow_dispatch в этой задаче не выполнялись и не разрешены.
++
++После отдельного разрешения потребуется опубликовать изменения в feature-ветке и проверить настоящий Actions run: SHA, все phase outcomes, JSON counts, отсутствие skips, cleanup и скачанный artifact. До этого готовность именно GitHub execution environment остаётся открытой.
++
++## Пока не проверено
++
++Фактическое исполнение workflow на GitHub-hosted runner, загрузка artifact сервисом GitHub, job cancellation/host failure cleanup. Работа со старыми Debian volumes, физическая совместимость и перенос рабочих данных не проверялись; in-place переход не предлагается.
++P06–P13 и полный production readiness не начаты. Изменений booking rules/weather/Kafka processing нет.
+diff --git a/docs/homework-05/operations.md b/docs/homework-05/operations.md
+new file mode 100644
+index 0000000..71d9a7f
+--- /dev/null
++++ b/docs/homework-05/operations.md
+@@ -0,0 +1,77 @@
++# Operations — этап 1
++
++## Локальный запуск (P01–P05)
++
++Нужны Docker Engine с Compose v2/BuildKit и Python 3 для создания локального файла.
++Из корня существующего KazanCourts:
++
++```bash
++python3 scripts/init_local_env.py
++# Только при первой настройке; существующий .env сохранять.
++docker compose config --quiet
++docker compose up --build -d --wait --wait-timeout 180
++docker compose exec web python manage.py check
++docker compose exec web python manage.py migrate --check
++docker compose exec web python manage.py seed_demo_data
++```
++
++`migrate` обязан завершиться с exit 0; web стартует после него. Начальная готовность Kafka может занять время.
++Внутренние HTTP-проверки на 127.0.0.1:8000: `/health/live` → 200, `/health/ready` → 200 с двумя true.
++GET `/` → 302 на login; `/login/` → 200. Для ручного входа `docker compose exec web python manage.py create_employee` интерактивно; не вводить пароль в аргументы/отчёты.
++Seed создаёт только синтетические корты/клиентов. Повторный запуск seed не дублирует их.
++Статические файлы обслуживает прежний Django runserver при DEBUG=1. Это локальный учебный сценарий; production WSGI/TLS/прокси в этом этапе не вводятся.
++
++```bash
++docker compose restart
++docker compose ps
++# Снова проверить live/ready и login.
++docker compose down
++# Тома сохраняются. Не использовать down --volumes для ценных данных.
++```
++
++## Изолированная регрессия
++
++Нельзя использовать development/production Kafka или БД. Новый checkout/worktree, собственный .env, свободный порт, отдельный project:
++
++```bash
++export COMPOSE_PROJECT_NAME=kc-hw05-test-local
++export KAZAN_HTTP_PORT=18005
++docker compose up --build -d --wait --wait-timeout 180
++python3 scripts/check_production.py --project "$COMPOSE_PROJECT_NAME" --port "$KAZAN_HTTP_PORT"
++# Smoke намеренно останавливает DB/Kafka и рестартует свой проект.
++docker compose stop scheduler publisher consumer
++set -a; . ./.env; set +a
++docker compose exec -T -e DB_NAME=postgres -e DB_USER=kazan_test \
++  -e DB_PASSWORD="$TEST_DB_PASSWORD" -e KAFKA_INTEGRATION=1 \
++  web python manage.py test test_database bookings config.test_health --verbosity 2 --noinput
++node --test bookings/tests/operator_queue_ui.test.js
++docker compose start scheduler publisher consumer
++```
++
++Интеграционные тесты пишут в Kafka topic этого стенда, поэтому после них не переносить этот volume в рабочую среду.
++Тестовый пользователь не имеет CONNECT к development DB. Django создаёт/удаляет test_kazan_courts.
++Перед удалением тестовых томов проверить, что project действительно выделен только этой проверке.
++
++## Обновление системы
++
++P13: **Not Run / не реализовано на этом этапе**. Не применять этот документ как production runbook обновления или rollback.
++
++## Восстановление системы
++
++P13: **Not Run / не реализовано на этом этапе**. См. [backup-restore](backup-restore.md); дамп и restore не проверены.
++
++## Дополнение Review: безопасность существующего PostgreSQL volume
++
++Для Alpine введён отдельный `compose_postgres_alpine_data`. Старый Debian `compose_postgres_data` сохраняется и не подключается к Alpine. Существующий стенд с данными нельзя обновлять сменой образа или переименованием тома; он остаётся на прежней конфигурации до отдельного плана переноса. Новый volume означает новую пустую БД.
++[Анализ и минимальное решение](postgresql-volume-review.md).
++
++## Полностью облачный CI (подготовлен, GitHub запуск пока не подтверждён)
++
++`.github/workflows/ci.yml` использует только GitHub-hosted `ubuntu-24.04`.
++Runner создаёт отдельный `kc-hw05-ci-<run_id>-<attempt>` project, приватный файл временных credentials в RUNNER_TEMP, полностью пересобирает Compose, проверяет все сервисы/миграции/отказы зависимостей, полный Django и JS наборы, затем аудит и cleanup.
++Никаких self-hosted runner, ASUS/MSI, production credentials или реальных интеграций не требуется. `WEATHER_NETWORK_ENABLED=0` задаётся конфигурацией тестового файла.
++
++После отдельного разрешения на commit/push workflow можно запустить на feature-ветке, PR в main или вручную через workflow_dispatch, когда эта версия workflow доступна на default branch. Само наличие workflow не считается успешным Actions run. Для подтверждения нужны run URL, commit SHA, зелёный job, точные counts и проверенный artifact.
++
++Только прошедшие аудит логи/JSON и фиксированные PASS/FAIL summary попадают в artifact `kazancourts-p01-p05-<run_id>-<attempt>` (14 дней). Если аудит или cleanup не прошёл, подробные raw-логи не публикуются; остаётся безопасный summary с FAIL. Они не выводятся через tee в Actions console. Полный runtime environment/inspect контейнеров не выгружается.
++Cleanup в `always()` останавливает проект, удаляет только его новые тестовые volumes/network/контейнеры/локальные build images, удаляет временные секреты и raw-логи. Принудительное завершение runner/job может прервать cleanup; такой запуск не является PASS. GitHub утилизирует hosted runner, но это не заменяет проверяемый cleanup в успешном прогоне.
+diff --git a/docs/homework-05/postgresql-volume-review.md b/docs/homework-05/postgresql-volume-review.md
+new file mode 100644
+index 0000000..3f07c6e
+--- /dev/null
++++ b/docs/homework-05/postgresql-volume-review.md
+@@ -0,0 +1,28 @@
++# PostgreSQL Debian → Alpine: решение Review
++
++Дата: 14 ноября 2026. Scope: анализ риска и защита конфигурации; перенос рабочих данных не выполнялся.
++
++## Почему нельзя просто сменить tag
++
++Одинаковая версия сервера 18.6 сама по себе не доказывает совместимость физического каталога данных между Debian/glibc и Alpine/musl. Могут отличаться libc/locale/ICU, правила collation, версии библиотек и расширений, UID/GID postgres. Каталог `PGDATA` и major-version могут совпасть, при этом сортировка и соответствующие индексы будут работать иначе. Успешный старт и SELECT 1 этого не выявляют. Init entrypoint может менять владельца файлов, поэтому даже пробное подключение старого тома к новому контейнеру не является безопасной read-only проверкой.
++
++`ALTER COLLATION ... REFRESH VERSION` обновляет метаданные, но само по себе не перестраивает индексы и не доказывает корректность данных. Это не автоматическое решение перехода libc.
++
++## Минимальное решение на этом этапе
++
++1. Для новых локальных/CI-стендов остаётся `postgres:18.6-alpine`, выбранный после аудита слоёв.
++2. Compose использует новое имя `compose_postgres_alpine_data`. Старое `compose_postgres_data` не указано в mounts или объявлениях volumes новой конфигурации. В рамках одного project имя нового volume будет `<project>_compose_postgres_alpine_data`.
++3. Старый Debian-volume сохраняется. Нельзя переименовывать его, прописывать его имя через external volume override или подключать его к Alpine.
++4. Новый volume — пустая отдельная БД. Это не миграция и не доказательство потери старых данных. Если в существующем стенде нужны прежние данные, **не переключать его на новый Compose**, продолжать прежний Debian-стек до отдельного решения о переносе.
++5. Не применять `down --volumes` к старому проекту. CI удаляет только собственные заново созданные ресурсы с уникальным префиксом и проверенным ownership marker. Все проверки здесь используют новые тестовые volumes.
++
++Цена: старый и новый стенды используют разные данные. Автоматическое обновление существующего стенда не заявляется. Изменение имени volume предотвращает случайное физическое переиспользование, но не заменяет план миграции.
++
++## Что потребуется отдельно, если перенос данных будет разрешён
++
++Выбрать source/target версии, локали и расширения, зафиксировать downtime и rollback. Выполнить логический dump/restore в новый volume, проверить ограничения, collation/indexes, контрольные данные, API и фоновые сценарии. Исходный Debian-volume сохранить до приёмки. Это только перечень решений для отдельной задачи, **не выполненная практика P11/P12/P13**; готового production-runbook или команды удаления данных здесь нет.
++
++## Доказательства и открытые вопросы
++
++Статическая проверка новой конфигурации и чистый запуск с новым volume выполняются в Codex, с отдельным CI project. Существующие volumes не монтировались и не удалялись.
++Фактический Debian→Alpine перенос данных, проверка collation на рабочих данных и GitHub Actions запуск пока **Not Run**.
+diff --git a/docs/homework-05/production-practice.md b/docs/homework-05/production-practice.md
+new file mode 100644
+index 0000000..d9bdbbd
+--- /dev/null
++++ b/docs/homework-05/production-practice.md
+@@ -0,0 +1,88 @@
++# KazanCourts — Homework 005, этап 1 (P01–P05)
++
++Статус: подготовлено к независимому Review, не полная production readiness.
++Источник: [Homework §5](sources/Mentor_Homework_005.md), [roadmap Level 5 A/B/C](sources/ai_native_engineering_roadmap.md).
++Работа относится только к KazanCourts. Центральные документы видеопроекта и статусы обучения не изменяются.
++
++## Архитектура и границы
++
++`web → PostgreSQL`; `scheduler → PostgreSQL/outbox`; `publisher → Kafka → consumer → PostgreSQL`.
++Существующие правила бронирования, погоды, topic, publisher и consumer сохранены.
++Сервисы `db` и `kafka` не публикуют порты наружу. Web привязан к loopback.
++Одна Compose-сеть на проект; два named volumes для PostgreSQL и Kafka.
++`migrate` — одноразовая задача после готовности БД, перед всеми Django-процессами.
++Мониторинг, structured logs, traces, dashboard относятся к следующим этапам.
++
++## Матрица требований
++
++| ID | Требование | Изменение / доказательство | Результат и граница |
++|---|---|---|---|
++| P01 | Весь локальный сценарий Compose | web, db, kafka, scheduler, publisher, consumer + migrate; чистый старт, restart и регрессии | PASS — см. [фактические проверки](testing-report.md) |
++| P02 | Конфигурация без изменения бизнес-кода | `.env.example`, генератор `.env`; DEBUG, hosts, port, broker, weather; тест runtime override | PASS — см. testing-report |
++| P03 | Секреты вне Git/образа/отчёта | `.env` 0600, уникальные значения; исключение из build context; целевая проверка diff/logs/image layers | PASS — см. testing-report; не аудит всех исторических credentials |
++| P04 | Жизнь процесса | GET/HEAD `/health/live`, 200 даже при остановленных DB/Kafka | PASS — см. testing-report; не проверяет worker progress |
++| P05 | Готовность выполнять работу | GET/HEAD `/health/ready`: SELECT 1 и Kafka cluster metadata; отказ 503 и восстановление 200 | PASS — см. testing-report; не проверяет миграционную схему, lag, доставку, работоспособность workers |
++| P06 | Structured logs | Не начато | Not Run — вне этапа |
++| P07 | Correlation ID | Не начато | Not Run — вне этапа |
++| P08 | Сквозной trace | Не начато | Not Run — вне этапа |
++| P09 | Metrics | Не начато | Not Run — вне этапа |
++| P10 | Dashboard | Не начато | Not Run — вне этапа |
++| P11 | Backup | Не начато | Not Run — [открытый артефакт](backup-restore.md) |
++| P12 | Restore | Не начато | Not Run — [открытый артефакт](backup-restore.md) |
++| P13 | Запуск/обновление/восстановление | Для этапа описан только запуск | Not Run в полном объёме — [operations](operations.md) |
++
++## Environment
++
++Compose читает `.env` из корня. На хосте Django сам `.env` не читает.
++Переменные shell имеют приоритет над `.env`; не выводить `docker compose config` без `--quiet`.
++
++| Переменная | Назначение / безопасный пример |
++|---|---|
++| POSTGRES_PASSWORD | Bootstrap/admin пароль локальной БД, генерируется |
++| DEV_DB_PASSWORD | Пароль роли kazan_dev, генерируется |
++| TEST_DB_PASSWORD | Пароль отдельной роли kazan_test, генерируется |
++| DJANGO_SECRET_KEY | Django signing key, генерируется |
++| DJANGO_DEBUG | `1` для локального запуска, `0` для проверки отключения debug |
++| DJANGO_ALLOWED_HOSTS | `localhost,127.0.0.1`; список через запятую |
++| KAZAN_HTTP_PORT | Порт loopback хоста; `8000`, в Review `18005` |
++| KAFKA_BOOTSTRAP_SERVERS | Внутри Compose `kafka:9092`; адрес должен быть доступен всем Django-процессам |
++| WEATHER_NETWORK_ENABLED | `0`; реальные запросы не разрешены в этом этапе |
++| DB_HOST/DB_PORT | Compose задаёт `db`/`5432`; прямому запуску задавать явно |
++| DB_NAME/DB_USER/DB_PASSWORD | Compose задаёт development DB/роль/пароль; для тестов только postgres/kazan_test/TEST_DB_PASSWORD |
++| COMPOSE_PROJECT_NAME / `-p` | Пространство имён сети, контейнеров, томов; отдельное для каждого теста |
++
++Имена DB/ролей закреплены текущим init-скриптом; изменение этих имён не заявлено.
++Пароли задаются при первом создании volume; замена `.env` не меняет пароли существующей БД.
++Генератор отказывается перезаписывать `.env`. Значения GENERATE_LOCALLY в шаблоне — placeholders, не готовая конфигурация.
++
++## Secrets и build
++
++Выбран прежний способ передачи через environment; файл не попадает в Git или образ.
++Это не secret manager: администратор Docker/хоста видит environment процесса. Не публиковать `inspect`, полный Compose config, `.env` и dumps.
++Образ копирует только код/шаблоны/static, PostgreSQL-образ на официальной базе postgres:18.6-alpine — только init-скрипт. Debian-база заменена после обнаружения стандартного snakeoil private key в её слоях; перенос существующей Debian-БД на Alpine не выполнялся и требует отдельного плана. Приложение работает под UID 10001.
++Для cloud proxy поддержан необязательный BuildKit secret `cloud_ca`; CA подключается только на шаге pip, TLS-проверка сохраняется.
++Это публичный сертификат доверия, не credential. На обычном Docker build secret не нужен.
++
++## Health/readiness policy
++
++Liveness не обращается к зависимостям, не требует входа; оба endpoint не кешируются и не принимают запись.
++Readiness отвечает `{"status":"ready","checks":{"postgres":true,"kafka":true}}` либо 503 с булевыми состояниями.
++Имена хостов, исключения, пароли в ответ не включаются. Kafka проверяется чтением metadata без создания сообщений.
++Настроены connect timeout PostgreSQL 2s и Kafka bootstrap/request timeout 1.5s.
++Это не общий deadline запроса: зависшая уже открытая SQL-сессия или DNS может потребовать отдельной политики.
++Для локальной системы Kafka обязательна как часть полного фонового сценария. При её отказе web жив, бронирования по прежней логике могут сохраняться в outbox.
++Readiness — сигнал оператору/будущему роутеру, не автоматический запрет API. Docker healthcheck использует liveness; он не доказывает автоматический restart unhealthy контейнера.
++
++## Roadmap и решения
++
++Этап даёт технические доказательства для A01–A04 (image/volume/network/Compose), A09–A11 (environment/secrets/migrations), C07 (health/readiness), B01/B03 (локальная сборка/тесты).
++Он не закрывает весь Track A/B/C, CI/CD, deployment, TLS, rollback или понимание пользователя.
++Автоматические миграции здесь выбраны для воспроизводимого локального стенда; план production-миграций и rollback остаётся P13.
++Собственный design/выбор пользователя и защита не реконструируются задним числом. Это реализация агента в рамках прямого поручения и материал для Review.
++
++
++## Дополнение повторного Review (14 ноября)
++
++Первоначальная реализация независимо проверена; открытые вопросы CI и PostgreSQL рассмотрены в [ci-review](ci-review.md) и [volume review](postgresql-volume-review.md).
++Для новых Alpine-стендов Compose использует `compose_postgres_alpine_data`, сохраняя старый Debian-volume отдельно. Автоматический перенос данных не выполняется.
++Подготовлен hosted CI P01–P05; Codex и GitHub доказательства разделены в testing-report. Это не начало P06–P13, не новый observability/CI-CD deployment этап и не заявление об успешном Actions run.
+diff --git a/docs/homework-05/requirements-traceability.md b/docs/homework-05/requirements-traceability.md
+new file mode 100644
+index 0000000..fb38301
+--- /dev/null
++++ b/docs/homework-05/requirements-traceability.md
+@@ -0,0 +1,15 @@
++# Локальная traceability KazanCourts — этап 1
++
++Центральная матрица обоих приложений остаётся вне этого изменения. Реестр M/Q/U и статусы теории/защиты не закрываются.
++
++| Требование и источник | Реализация | Проверка | Доказательство |
++|---|---|---|---|
++| P01, Homework §5, roadmap A01–A04/A11 | compose.yaml, Dockerfile, docker/postgres/Dockerfile | fresh volumes → migrations → все сервисы, retained-volume restart | testing-report, logs 28/32 |
++| P02, §5, A09 | .env.example, scripts/init_local_env.py, config/settings.py | port18005, DEBUG/hosts overrides, no overwrite | testing-report |
++| P03, §5, A10 | .gitignore/.dockerignore, explicit COPY, private .env | diff/files/logs/image config+history+layers; known generated secrets and common token signatures | scripts/audit_local_secrets.py, testing-report |
++| P04, §5.1, C07 | config/health.py live, Compose healthcheck | live 200 при DB/Kafka stop | config/test_health.py, scripts/check_production.py |
++| P05, §5.1, C07 | config/health.py ready, config/urls.py | ready200 →503 →200, оба отказа | config/test_health.py, scripts/check_production.py |
++| P06–P13 | Вне разрешённого этапа | Not Run | production-practice, operations, backup-restore |
++
++[Оригинал Homework](sources/Mentor_Homework_005.md) и [roadmap](sources/ai_native_engineering_roadmap.md) сохранены из присланного архива без редакторских изменений.
++Итоговая защита и независимый Review ещё не проведены.
+diff --git a/docs/homework-05/sources/Mentor_Homework_005.md b/docs/homework-05/sources/Mentor_Homework_005.md
+new file mode 100644
+index 0000000..9c816e9
+--- /dev/null
++++ b/docs/homework-05/sources/Mentor_Homework_005.md
+@@ -0,0 +1,597 @@
++# Mentor Homework 005 — Видеосервис с RabbitMQ и Production Practice двух приложений
++
++**Проект обучения:** AI-Native Engineering.  
++**Номер:** 005. **Документ подготовлен:** 2026-11-06, МСК. **Редакция 2:** в тот же день добавлен письменный чек-лист Production Practice из сообщения пользователя.  
++**Статус Homework:** `Планируется` — задание извлечено из встречи; выполнение этого ДЗ и его защита данным документом не подтверждаются. Пользователь сообщил о переходе к пятому циклу. Создание файла не закрывает автоматически №4 и накопительный Review.  
++**Источник задания:** `Транскрибация 5-го урока.txt`, источник записи — `5 урок.mp4`, длительность 00:40:27. Транскрибация прочитана полностью. **Дата самой встречи в источнике не указана**; дата составления документа не подменяет её. Метки времени приблизительные, собеседники автоматически не размечены.  
++**Следующая встреча / дедлайн / доступные часы:** не названы. Календарные даты выполнения не назначены.  
++**Главная позиция roadmap:** практика Project 2 / Level 4 и начало Production Engineering / Level 5, Tracks A, B, C. Track D пока отложен, кроме отдельно заданной работы с секретами. CP4 и CP5 требуют доказательств, автоматически не закрыты.  
++**Дополнительный источник:** письменный чек-лист `Production Practice`, переданный пользователем 2026-11-06: 11 исходных пунктов полностью сохранены в разделе 5. Пробел источника U01 закрыт. Список относится к обоим приложениям по указанию ментора в 00:29:12–00:31:47. Остальные неясности транскрибации имеют отдельные статусы.
++
++## 1. Как пользоваться этим файлом
++
++Это канонический рабочий файл **нового ДЗ №5**, а не новая версия №4. Его назначение — сохранить поручения встречи, отделить теорию от реализации и дать проверяемые критерии выполнения.
++
++Обозначения происхождения:
++
++- **Явно задано** — непосредственно сказано или однозначно подтверждено в разговоре.
++- **Следует из результата** — необходимая техническая часть заданного поведения; конкретный способ ментор не выбирал.
++- **По контексту** — поручение сформулировано через отсылку к предыдущему обсуждению; связь и степень уверенности указаны.
++- **Требует уточнения** — есть несколько трактовок или отсутствует часть исходных материалов.
++- **Внутреннее качество** — правила проверки и учебные артефакты проекта, не дословное поручение ментора.
++
++Во время выполнения использовать цикл: простое объяснение → один безопасный шаг → фактический результат пользователя → проверка → следующий шаг. Карта блоков ниже не является пакетом команд для выполнения вслепую. Сначала пользователь понимает и предлагает решение, затем AI проверяет предложение и помогает реализовать.
++
++## 2. Что произошло на встрече и что относится к ДЗ №4
++
++### 2.1. Review предыдущей работы
++
++| Фрагмент | Что обсуждали / установили | Как учитывать дальше |
++|---|---|---|
++| 00:00:56–00:08:06 | Пользователь описал внедрение Kafka и Transactional Outbox, планирование с Codex, атомарную запись и имитацию уведомления | Это отчёт и устное обсуждение выполненного №4, не новая задача №5 и не свежая проверка кода |
++| 00:08:36–00:10:34 | Обсуждены dual-write, повторное сообщение, идемпотентность, ограничения PostgreSQL, падение после обработки | Сохранить учебный разбор, но исправить смешение разных понятий — раздел 9 |
++| 00:11:14–00:14:03 | Ментор заметил отличие от исходного замысла: Kafka используется после погодных изменений через outbox, а не непосредственно для проверки погоды; пользователь объяснил часовой опрос и правило 72 часов | Зафиксировать расхождение требований и реализации. Позднее ментор **не потребовал** переделывать этот поток в старом сервисе |
++| 00:14:32–00:19:34 | DLQ отсутствует. Пользователь сообщил, что пропустил её; ментор объяснил риск повторного падения на проблемном событии и задержки обработки partition | Это конкретный недочёт надёжности и основа требований к новому проекту. Отсутствие DLQ нельзя спрятать в optional без явного решения |
++| 00:20:06–00:23:28 | Обсуждены выбор Kafka, инфраструктура компании, объём обработки, хранение событий, асинхронная связь сервисов, outbox | Теоретическое закрепление и аргументация решений; это не распоряжение вставлять Kafka/outbox во все будущие проекты |
++| 00:24:03; 00:31:15–00:31:47 | Ментор разрешил двигаться к новому проекту; на прямой вопрос о старом ответил: доделывать прежнюю функциональность не нужно, только Production Practice | Сервис кортов получает эксплуатационные улучшения. Переписывание погодной логики и внедрение DLQ в прежнюю Kafka-цепочку в №5 не входят |
++| 00:31:47–00:32:26 | Положительная общая оценка работы и большей части теории | Факт положительного mentor review, но не доказательство прохождения всех внутренних формальных критериев |
++
++### 2.2. Точное правило переноса
++
++1. В старом сервисе **сохранить** существующую бизнес-логику бронирования, погоды, Kafka/outbox и имитации уведомлений, если эксплуатационные изменения не требуют маленькой технической адаптации.
++2. Для старого сервиса выполнить Production Practice из раздела 5.
++3. В новом видеосервисе сделать акцент на отказах, повторах и DLQ — на том, что было упущено ранее.
++4. Не переносить старый недочёт как скрытое требование «сначала переделать №4». Ментор явно исключил такую доработку.
++5. Если изменение общего механизма логирования/конфигурации затрагивает старую функцию, проверить регрессию, а не расширять её поведение.
++
++### 2.3. Формальный учёт перед активацией
++
++Доступный `Mentor_Progress.md` датирован 2026-10-17 и содержит уже устаревшую позицию «№4 планируется». Более поздний `Mentor_Homework_Defense_004_IN_PROGRESS.md` фиксирует №4 как `Проверяется`: финальный устный раунд пройден по содержанию, но остаётся документальная сверка Draft-артефактов и истории решений. Новая встреча добавляет фактический mentor review и разрешение не переделывать функциональность.
++
++**Не объявлять №4 формально завершённым только на основании создания №5.** Не назначать новые устные пересдачи без причины: в протоколе №4 прямо указано, что оставшаяся работа — документальные доказательства. При синхронизации прогресса сохранить оба факта: положительный review ментора и незавершённую внутреннюю сверку.
++
++`Mentor_Review_01.md` найден и прочитан: это шаблон со статусом `Not started`, последним вопросом 0 и оставшимися 100 новыми вопросами. `Mentor_Knowledge_Gaps.md`: ACTIVE 0 / IMPROVING 0 / CLOSED 0, завершённых накопительных Review нет.
++
++**Review 01 по №1–4 предстоит; он не пройден.** После формального завершения №4 он становится обязательным `Review due`. Если пользователь выбирает выполнять №5 раньше, отдельно зафиксировать `Review due / отложено`, а не придумывать результат Review. Подготовка этого файла не требует повторного выполнения принятых ДЗ №1–3.
++
++## 3. Полный реестр поручений ментора
++
++Реестр объединяет устную транскрибацию M01–M32 и дополненный письменный список M33–M34; уточнения M19–M27 также сверены с письменным источником. Все пункты в этой таблице должны получить итоговый статус: выполнено / не выполнено / требуется уточнение / явно отменено ментором. Нельзя считать их выполненными лишь по наличию плана.
++
++| ID | Что нужно сделать | Источник в записи | Происхождение и граница |
++|---|---|---|---|
++| M01 | Создать новое веб-приложение, в которое пользователь загружает видео | 00:24:03–00:24:33; 00:26:24 | Явно задано. Это самостоятельный новый проект |
++| M02 | Сохранить оригинальный загруженный файл | 00:25:03 | Явно задано. Производные версии не заменяют оригинал |
++| M03 | Загрузка и последующая работа с видео не должны блокировать работу интерфейса/приложения | 00:26:24 | Явно задано. Развести передачу файла и тяжёлую обработку; не обещать мгновенную передачу гигабайтов |
++| M04 | Учитывать большие исходные видео, в том числе размером в несколько гигабайт | 00:26:24 | Явно сказан такой масштаб. Численный лимит не установлен; нужны осмысленные лимиты ресурсов, а не обещание бесконечного размера |
++| M05 | Преобразовать видео в несколько разрешений в фоне | 00:24:33–00:25:03; 00:26:24–00:27:00 | Явно задано. Один готовый MP4 вместо нескольких качеств не закрывает пункт |
++| M06 | Ограничить верхнее разрешение результата 720p; сделать более низкие варианты | 00:25:03 | Явно задано 720p и упомянуто 480p. Нижняя ступень распознана как «360-320» — U02 |
++| M07 | Построить обработку на очередях | 00:26:24 | Явно задано. Тяжёлая операция не должна выполняться до ответа обычного запроса на постановку задания |
++| M08 | Вернуть одну ссылку на результат в формате плейлиста, который можно встроить в плеер | 00:27:00 | Явно задан результат; в речи «m3u». HLS / `.m3u8` — наиболее вероятная техническая трактовка, а не дословное подтверждение — U03 |
++| M09 | Обеспечить воспроизведение/встраивание результата в обычный подходящий видеоплеер | 00:24:33; 00:27:00 | Явно задано. Не обещать, что любой браузер воспроизведёт HLS без соответствующей поддержки |
++| M10 | По завершении работы отправить уведомление о готовности | 00:25:03 | Явно задано. Показать только статус в собственной БД недостаточно |
++| M11 | Сделать настраиваемый webhook и вызвать его после завершения, передав ссылку на видео | 00:25:34; 00:27:30 | Сначала назван желательным, затем повторён как часть итогового flow. Включён в Core. Детали контракта не названы — U04 |
++| M12 | В новом проекте использовать **RabbitMQ**, а не Kafka | 00:30:41 | Явное ограничение, цель — опыт с разными брокерами. Фреймворк worker не предписан |
++| M13 | Сделать упор на пропущенной ранее надёжности; реализовать DLQ для проблемных заданий | 00:14:32–00:19:34 + 00:31:15 | Сильное требование **по контексту**: ментор подробно разбирает отсутствующую DLQ и возвращает этот недочёт в новый проект. Не молчаливое расширение теории |
++| M14 | Изучить **весь Level 5 Track A — Deployment** | 00:28:13–00:29:12 | Явно задан весь трек, даже если Docker/Compose уже встречались |
++| M15 | Изучить **весь Level 5 Track B — CI/CD** | 00:28:44–00:29:12 | Явно задан весь трек. Наличие CI не равно пониманию и не означает автоматического требования нового production-деплоя |
++| M16 | Изучить **весь Level 5 Track C — Observability & Reliability** | 00:28:13–00:29:12 | Явно задан весь трек, а не только названные вслух logs/metrics |
++| M17 | Track D пока не проходить как полный блок | 00:28:44–00:29:12 | Прямое ограничение. Отдельно заданные secrets обязательны, хотя они есть также в D |
++| M18 | Выполнить Production Practice **для обоих** приложений: кортов и нового видеосервиса | 00:29:12–00:31:47 | Явно задано два приложения. Нельзя показать эксплуатационные улучшения только на новом |
++| M19 | Запуск обоих приложений через Docker Compose; понимать устройство запуска | 00:29:45; 00:31:47 | Явно задано. Имеющийся Compose проверить и объяснить, не переписывать ради новизны |
++| M20 | Понятная конфигурация через environment | 00:29:45 | Явно задано. Настройки окружения не должны быть разбросаны по коду |
++| M21 | Секреты хранить отдельно от репозитория; разобраться, как это делать | 00:29:45–00:30:00 | Явно задано. Конкретный secret manager не назван |
++| M22 | Добавить/проверить health и readiness checks | 00:30:00; 00:31:47 | Явно задано. Разница между «процесс жив» и «готов обслуживать» должна быть понятна |
++| M23 | Структурированные логи — structured logging | 00:30:00; 00:31:47 | Явно задано с распознаванием технического термина по контексту |
++| M24 | Request/job correlation ID — связать запрос и фоновое задание | 00:30:00 + письменный Production Practice | Явно задано. Идентификатор прослеживается через границу HTTP и фоновой обработки в каждом приложении |
++| M25 | Хотя бы один trace сквозного сценария для каждого приложения | 00:30:00 + письменный Production Practice | Письменный минимум уточнён: одна реальная сквозная трасса в К и одна в В; коррелированные логи сами по себе её не заменяют |
++| M26 | Базовые metrics — измеримые показатели работы | 00:28:13; 00:30:00 + письменный Production Practice | Явно задан базовый объём. Изменяющиеся показатели, а не статичный экран; обширный каталог метрик не обязателен |
++| M27 | Простой monitoring dashboard | 00:30:41 + письменный Production Practice | Простая полезная панель для обоих приложений; Grafana предложена как вариант, другой инструмент разрешён |
++| M28 | Старое приложение больше функционально не переделывать; только Production Practice | 00:31:15–00:31:47 | Явное ограничение. Не добавлять туда новую DLQ или перенос погоды на Kafka без нового решения |
++| M29 | Разобраться в архитектурном смысле предложений Codex; переспрашивать простыми словами и пересказывать своё понимание | 00:32:26–00:35:52 | Прямая рекомендация к процессу. Ориентир ментора около 80% понимания архитектурного смысла, а не заучивание всех деталей кода |
++| M30 | Сверять реализацию с требованиями, направлять и ограничивать модель, осознанно принимать отклонения | 00:36:37–00:37:40 | Прямой вывод ментора из review. Нельзя принимать удобную агенту замену задания молча |
++| M31 | Вернуться к непонятным теоретическим темам: перечитать, запросить другое объяснение или другой материал | 00:38:14–00:39:35 | Прямая рекомендация. Уметь объяснить причину сомнений в решении AI |
++| M32 | По готовности написать ментору и договориться о следующей встрече | 00:39:35 | Явное организационное действие **пользователя**. Дата заранее не назначена; ассистент не отправляет сообщение сам |
++| M33 | PostgreSQL backup и **проверенный restore** для обоих приложений | Письменный Production Practice, передан пользователем 2026-11-06 | Явно задано. Нужны реальная копия и фактическое восстановление с проверкой данных; наличие dump-файла не закрывает restore |
++| M34 | Инструкция, как **запустить, обновить и восстановить систему**, для каждого приложения | Письменный Production Practice, передан пользователем 2026-11-06 | Явно задано три отдельных сценария; одной инструкции первого запуска недостаточно |
++
++**Действие ментора и дополнение источника:** в 00:30:00–00:31:47 ментор ссылается на письменный Production Practice. Пользователь передал его 2026-11-06; текст полностью включён в раздел 5. Дополнительные обязательные результаты, которых не хватало в устном перечне, — PostgreSQL backup с проверенным restore и инструкция запуска/обновления/восстановления. Минимум трассировки уточнён до хотя бы одного сквозного trace на приложение.
++
++## 4. Практика A — новый видеосервис
++
++### 4.1. Минимальный результат пользователя
++
++Пользователь открывает веб-приложение, выбирает видео и запускает загрузку. Приложение сохраняет исходник, ставит обработку в очередь RabbitMQ и позволяет продолжать работу. Фоновый исполнитель готовит несколько качеств с верхней границей 720p. После успешной подготовки приложение предоставляет одну ссылку на воспроизводимый плейлист и отправляет её на настроенный webhook.
++
++**Уточнение технической последовательности:** гигабайтный файл не нужно передавать через RabbitMQ. В сообщении может быть идентификатор задания и ссылка/путь к уже сохранённому исходнику. Это рекомендуемая минимальная трактовка, не дословное предписание ментора. Нельзя запускать обработку ещё не завершившейся загрузки как будто оригинал уже цел и доступен.
++
++### 4.2. До реализации пользователь должен определить
++
++Это необходимые проектные решения, а не выбранная за пользователя архитектура:
++
++1. Где сохраняются оригинал, временные файлы и результаты; как worker получает к ним доступ после перезапуска.
++2. Что означает «загрузка не блокирует»: интерфейс остаётся отзывчивым, передача файла не держит всё содержимое в памяти, перекодирование отделено от HTTP-запроса. Нужны ли chunked/resumable uploads — отдельный выбор, ментор их не требовал.
++3. Лимиты размера, длительности, диска, времени обработки, памяти и параллельности; каким тестом проверяется сценарий большого файла.
++4. Какие конкретно качества создаются, как поступать с исходником ниже 720p, вертикальным видео, нестандартным размером и отсутствующей аудиодорожкой. Не утверждать, что ментор выбрал политику upscale.
++5. Какая структура результата соответствует одной ссылке; как доступны плейлист и сегменты; в каком плеере проверяется воспроизведение.
++6. Как создаётся задание, какие состояния видны пользователю, как отличить готовность видео от доставки webhook.
++7. Какие события/задачи идут через RabbitMQ; как подтверждаются публикация и обработка; когда задание считается завершённым.
++8. Какие ошибки временные, какие постоянные; сколько попыток и какие интервалы; когда задание уходит в DLQ.
++9. Как повторная доставка сообщения не запускает неконтролируемые повторные побочные эффекты и не портит готовые файлы.
++10. Как задаётся адрес webhook, что передаётся, какой ответ считается успехом, как ведутся повторы, если получатель временно недоступен.
++
++Пользователь сначала формулирует первый вариант. AI показывает недостатки и альтернативы; итоговое решение и причины фиксируются. Не восстанавливать задним числом выдуманную «первоначальную гипотезу пользователя».
++
++### 4.3. Надёжность: обязательное поведение, способ реализации выбирается отдельно
++
++Эти критерии **следуют из M07/M11/M13 и внутреннего качества**, а не являются дословным перечнем технологий от ментора.
++
++| ID | Требуемое поведение | Что показать |
++|---|---|---|
++| Q01 | Повторяемая ошибка не вызывает бесконечный быстрый цикл возврата сообщения | Ограниченные попытки, интервалы, причина последней ошибки |
++| Q02 | После исчерпания попыток проблемное задание попадает в DLQ и остаётся доступным для разбора | Реальное сообщение в отдельной очереди, идентификатор задания, причина/история попыток |
++| Q03 | Плохое видео/сообщение не останавливает все последующие исправные задания | После проблемного задания обработано исправное |
++| Q04 | Падение worker не означает безусловную потерю уже принятого задания | Контролируемый crash/restart, возвращение задания к предсказуемому состоянию; точные ограничения гарантии |
++| Q05 | Повторная доставка безопасна | Повтор одного сообщения не повреждает готовый результат; состояние и число эффектов объяснимы |
++| Q06 | Готовность результата сохраняется до уведомления | Webhook получает ссылку на фактически доступное видео, а не на будущий файл |
++| Q07 | Недоступность webhook не требует заново перекодировать готовое видео | Отдельно видны готовое видео и pending/failed notification; повторяется доставка уведомления |
++| Q08 | Сбой между записью задания/результата и публикацией сообщения разобран явно | Схема окна сбоя; outbox или другое обоснованное решение, либо честно указанное ограничение и согласование |
++| Q09 | DLQ не используется как бесследная корзина | Есть способ посмотреть причину и контролируемо повторить/отклонить задание после исправления; интерфейс администратора не обязателен |
++| Q10 | Остановка и ограничение ресурсов не оставляют приложение в неопределённом состоянии | Таймаут процесса обработки, временные файлы и дальнейший статус описаны и проверены в выбранном объёме |
++
++**Важно:** DLQ — очередь для неудачных сообщений (dead-letter queue). В RabbitMQ DLX — exchange, через который такие сообщения маршрутизируются; это не одно и то же имя компонента. Простое поле `failed` в SQL без реальной dead-letter очереди не доказывает M13. Применённый механизм может включать RabbitMQ policies, worker framework или приложение — решение нужно объяснить.
++
++### 4.4. Что пока не предписано
++
++Язык, backend/framework, Celery или собственный worker, хранилище файлов, frontend/framework и конкретный плеер **не названы**. Письменный Production Practice теперь прямо требует **PostgreSQL backup + проверенный restore** для обоих приложений. Поэтому PostgreSQL учитывается при проектировании нового сервиса и его восстановления; заменять эту проверку другой БД молча нельзя. Это уточнение письменного источника, а не дословная фраза из устного обсуждения стека. FFmpeg предложен как подходящий инструмент, Grafana — как пример панели. Не добавлять Kafka в новый сервис. Kubernetes, CDN, кластер RabbitMQ, платный cloud, настоящая массовая рассылка и коммерческий видеохостинг не являются заданным минимумом.
++
++## 5. Практика B — Production Practice для двух приложений
++
++Здесь и далее **К** — существующий KazanCourts / сервис кортов; **В** — новый видеосервис. Письменный список получен от пользователя 2026-11-06 и закрывает U01. По устному указанию ментора весь список применяется **к обоим приложениям**. Если возможность уже есть, проверить её поведение и своё понимание, затем добавить недостающее.
++
++### 5.0. Письменный чек-лист — исходная формулировка целиком
++
++1. запуск целиком через Docker Compose;
++2. понятная конфигурация environment;
++3. secrets не в репозитории;
++4. health/readiness;
++5. structured logs;
++6. request/job correlation ID;
++7. базовые metrics;
++8. хотя бы один trace сквозного сценария;
++9. простой monitoring dashboard;
++10. PostgreSQL backup + проверенный restore;
++11. инструкция: как запустить, обновить и восстановить систему.
++
++Health/readiness и backup/restore ниже разделены на самостоятельные проверяемые строки. Поэтому 11 исходным пунктам соответствуют **13 критериев P01–P13**, без расширения исходного списка.
++
++| ID | Требование | К | В | Минимальное доказательство |
++|---|---|---|---|---|
++| P01 | Запуск **целиком** через Docker Compose | Обязательно | Обязательно | Все необходимые сервисы выбранного локального сценария запускаются по воспроизводимой инструкции; web/worker/брокер/БД и нужные компоненты наблюдения не забыты. Сети, volumes и зависимости объяснены |
++| P02 | Понятная конфигурация environment | Обязательно | Обязательно | Перечень переменных с назначением и безопасными примерами; изменение настройки без правки бизнес-кода |
++| P03 | Secrets не в репозитории | Обязательно | Обязательно | Выбранный способ передачи секретов; шаблоны без реальных значений; проверка diff/логов/образа в заявленном объёме |
++| P04 | Health check | Обязательно | Обязательно | Результат проверки жизни процесса и объяснение границ этой проверки |
++| P05 | Readiness check | Обязательно | Обязательно | Определены обязательные зависимости; показаны неготовность и восстановление готовности |
++| P06 | Structured logs | Обязательно | Обязательно | Структурированные поля времени/уровня/сервиса/события/ошибки и пример реальной операции без секретов |
++| P07 | Request/job correlation ID | Обязательно | Обязательно | Путь от запроса до фонового задания/сообщения можно восстановить по связанным идентификаторам; связь сохраняется при постановке в очередь |
++| P08 | Хотя бы **один trace сквозного сценария** | Обязательно | Обязательно | Как минимум одна реальная сквозная трасса в К и одна в В: видны этапы, их связь и длительность. Один job_id в логах не заменяет trace |
++| P09 | Базовые metrics | Обязательно | Обязательно | Минимальный полезный набор показателей изменяется после успеха/ошибки; известны источники и единицы измерения |
++| P10 | Простой monitoring dashboard | Обязательно | Обязательно | Живые показатели каждого приложения видны на простой панели; допускается общая панель с ясным разделением К/В |
++| P11 | PostgreSQL backup | Обязательно | Обязательно | Из учебной PostgreSQL создана реальная резервная копия; записаны команда, версия, формат, место хранения и состав данных. Это не только описание будущего backup |
++| P12 | **Проверенный PostgreSQL restore** | Обязательно | Обязательно | Копия фактически восстановлена в отдельную чистую учебную БД; проверены схема, контрольные данные и работа приложения. Команда без запуска и наличие dump-файла не закрывают пункт |
++| P13 | Инструкция запуска, обновления и восстановления **системы** | Обязательно | Обязательно | Три самостоятельных воспроизводимых сценария с командами, порядком действий и проверками результата; охвачены приложение, конфигурация/секреты, БД и необходимые постоянные данные |
++
++### 5.1. Как понимать требования без лишнего разрастания
++
++- **Health**: процесс способен отвечать. **Readiness**: сейчас можно принимать определённую работу. Недоступность брокера не обязана означать смерть всего веб-процесса; политику определить по функциям сервиса. Docker `healthcheck` сам по себе не создаёт полноценную маршрутизацию readiness и не доказывает автоматический restart.
++- **Environment**: обычные настройки зависят от среды, например адрес брокера. **Secrets**: чувствительные значения, например пароль. Переменная окружения не равна защищённому хранилищу; выбрать подходящий способ и объяснить риски. Vault/платный менеджер не обязателен.
++- **Structured logging**: записи с понятными полями. **Correlation ID** связывает запрос и фоновую работу; он должен передаваться через нужные границы компонентов. **Trace** показывает связанные этапы и длительности. Для каждого приложения требуется хотя бы один реальный сквозной сценарий; инструмент не предписан.
++- **Базовые metrics**: небольшой полезный набор. Для К возможны ошибки API, задержка/ошибки проверки погоды, состояние обработки сообщений. Для В — очередь, running/failed jobs, длительность перекодирования, DLQ и ошибки webhook. Это кандидаты, а не обязательный большой каталог.
++- **Dashboard**: простая панель с живыми данными. Допускается общая панель с ясным разделением приложений; две отдельные установки Grafana не требуются.
++
++### 5.2. PostgreSQL backup и проверенный restore — обязательная практика
++
++Выполнить **отдельно для К и В**. Конкретные команды выбирать после проверки реальных версий и структуры; в этом задании они не выдаются за уже выполненные.
++
++1. Подготовить понятные контрольные учебные данные и зафиксировать, что должно сохраниться: схема/миграции и несколько существенных записей/связей. Для К — выбранные бронирования/события, для В — выбранные задания и сведения о результатах, по фактической модели.
++2. Создать резервную копию PostgreSQL. Записать версию инструментов/БД, команду, формат и путь к копии. Не помещать dump с чувствительными данными или credentials в Git и учебные отчёты.
++3. Поднять **отдельную чистую учебную БД** для восстановления. Не выполнять эксперимент поверх исходной или production-БД.
++4. Фактически восстановить созданную копию. Сохранить команду, результат выполнения и ошибки, если они были.
++5. Проверить восстановленную схему и контрольные записи/связи. Успешного exit code процесса недостаточно без проверки содержимого.
++6. Подключить учебный экземпляр приложения к восстановленной БД и выполнить небольшой содержательный сценарий чтения/работы. Зафиксировать readiness и ожидаемый результат.
++7. Записать фактический итог и ограничения в `backup-restore.md` и `testing-report.md` каждого приложения.
++
++**Граница доказательства:** backup PostgreSQL сохраняет данные БД, но не сохраняет автоматически файлы исходных видео, плейлисты, конфигурацию и секреты. В инструкции восстановления системы явно описать, откуда берётся каждый необходимый компонент, какие файлы копируются, какие могут быть созданы повторно и что пока не покрыто. Нельзя назвать систему полностью восстановленной, если БД восстановлена, а необходимые оригиналы видео недоступны. Обязательная отдельная проверка из чек-листа — PostgreSQL restore; выбранный охват файлового восстановления и его проверок обозначать явно.
++
++### 5.3. Инструкция эксплуатации — три обязательных сценария
++
++В **каждом** приложении создать `docs/homework-05/operations.md`; README должен вести к нему или содержать те же необходимые шаги с явной ссылкой на канонический runbook.
++
++- **Как запустить:** предварительные условия, получение нужной версии, заполнение безопасного шаблона environment и подключение секретов, запуск всего Compose, миграции/инициализация в правильном порядке, проверка health/readiness, короткий контрольный сценарий.
++- **Как обновить:** выбор новой версии, необходимые подготовительные действия/копия данных, порядок обновления образов/сервисов и миграций, сохранение постоянных данных и заданий, проверка новой версии. Указать действие при неудаче и границы отката, не обещая автоматический откат данных.
++- **Как восстановить:** исходная ситуация сбоя, подготовка конфигурации/секретов и хранилищ, восстановление PostgreSQL из проверенной копии, согласование версии приложения/миграций, запуск сервисов, судьба незавершённых задач, проверка готовности и контрольных данных/сценария.
++
++Документировать **реальные команды и фактически проверенные результаты**. В безопасном локальном окружении проверить запуск и обновление каждого приложения, а восстановление — на отдельной учебной БД/экземпляре. Описание будущего сценария помечать как непроверенное, а не как готовый runbook. Внешний deployment этим чек-листом не разрешается и отдельно не задан.
++
++### 5.4. Граница полного production-объёма
++
++Письменный список подтвердил backup/restore и инструкцию обновления/восстановления как обязательную практику, а также уточнил минимум trace. Alerts, полноценный автоматический CD, внешний hosting, полная стратегия HA и отдельная реализация всех прочих production-механизмов в этом списке **не названы**. Их теория в A/B/C остаётся обязательной. Уже заданные failure-сценарии Q04/Q10 и порядок безопасного обновления/восстановления не отменяются; объём реализации определять по требуемому поведению, не добавляя весь соседний roadmap как скрытый Core.
++
++## 6. Теория — полный Level 5, Tracks A / B / C
++
++Ментор сказал изучить треки **полностью**. Поэтому здесь сохранены все **30 пунктов** официального Markdown-roadmap, включая не произнесённые вслух. Чекбокс означает подтверждённое изучение в рамках №5, а не наличие технологии в репозитории.
++
++Для каждого пункта пользователь должен простыми словами объяснить: что это; зачем нужно; короткий пример; где это есть/будет в К или В; риск/ограничение; как проверить. Точные определения не заучивать. Все статусы ниже исходно не подтверждены в рамках данного файла.
++
++### 6.1. Track A — Deployment / запуск и размещение приложения
++
++| ID | Тема из roadmap | Смысл и пример | Практическая граница №5 |
++|---|---|---|---|
++| A01 | [ ] Docker image / container | Image — подготовленный образ приложения; container — его запущенный экземпляр. Один образ можно запустить дважды | Понять и показать в обоих приложениях |
++| A02 | [ ] Volumes | Данные хранятся отдельно от заменяемого контейнера. Например, оригинал видео переживает пересоздание worker | Объяснить реальные постоянные данные и доступ компонентов |
++| A03 | [ ] Networking | Как контейнеры находят друг друга и какие порты доступны снаружи. Например, worker соединяется с брокером по имени сервиса | Связать с фактическим Compose |
++| A04 | [ ] Docker Compose | Описание и совместный запуск нескольких сервисов. Например, web + worker + broker | Практика P01 обоих приложений |
++| A05 | [ ] VPS vs PaaS vs Cloud | Свой виртуальный сервер, управляемая платформа и облачные сервисы: кто отвечает за обслуживание | Теория выбора; покупка инфраструктуры не задана |
++| A06 | [ ] Reverse proxy | Посредник перед приложением, который принимает и передаёт запросы. Например, выдаёт видео и направляет API-запросы | Теория; необходимость реализации определить по архитектуре, не добавлять компонент автоматически |
++| A07 | [ ] DNS | Сопоставляет имя сервиса в интернете с адресом. Например, имя сайта ведёт на сервер | Теория; домен регистрировать не требуется |
++| A08 | [ ] TLS / HTTPS | Защищённое соединение клиента с сервером. Например, видео и webhook передаются по HTTPS | Теория и план применимости; внешний HTTPS-деплой не подтверждён как обязательный |
++| A09 | [ ] Environments | Разные среды с разными настройками и данными. Например, локальные тесты не используют рабочую БД | P02 + объяснение разделения |
++| A10 | [ ] Secrets | Чувствительные значения передаются отдельно от исходников. Например, пароль брокера | Практика P03 обоих приложений |
++| A11 | [ ] Database migrations during deployment | Как изменение структуры БД согласуется с выпуском кода. Например, новая колонка не должна ломать старую версию | Теория и разбор реального/планируемого процесса, без production-изменений |
++| A12 | [ ] Rollback | Возврат к рабочей версии после неудачного выпуска. Например, вернуть образ и совместимую конфигурацию | Теория; отдельно разобрать ограничения отката миграций/данных |
++
++### 6.2. Track B — CI/CD / автоматические проверки и выпуск
++
++| ID | Тема из roadmap | Смысл и пример | Практическая граница №5 |
++|---|---|---|---|
++| B01 | [ ] Build | Подготовка исполняемого результата. Например, сборка Docker image | Найти и объяснить фактическую сборку |
++| B02 | [ ] Lint / static checks | Проверки исходников без выполнения бизнес-сценария. Например, ошибка стиля/анализа находится до запуска | Найти имеющиеся проверки; недостающие не выдавать за прошедшие |
++| B03 | [ ] Tests | Исполнение сценариев с проверкой ожидаемого результата. Например, сломанное видео доходит до DLQ | Осмысленные тесты №5; различать локальный запуск и CI |
++| B04 | [ ] Artifacts | Сохранённые результаты pipeline. Например, образ, отчёт тестов, собранный пакет | Теория и разбор имеющихся artifacts |
++| B05 | [ ] Deployment | Доставка и запуск выбранной версии в целевой среде | Отличать от build/tests и от merge; внешнее размещение — отдельное разрешённое действие |
++| B06 | [ ] Rollback strategy | Заранее выбранный порядок возврата к рабочему состоянию | Связать версию кода, образ, конфигурацию, миграции и данные; не обещать универсальный откат БД |
++
++Наличие зелёного CI не доказывает работающий CD, доступность сервиса или проверенную процедуру восстановления. Ментор отметил наличие CI, но не потребовал менять конкретный инструмент.
++
++### 6.3. Track C — Observability & Reliability / наблюдение и надёжность
++
++| ID | Тема из roadmap | Смысл и пример | Практическая граница №5 |
++|---|---|---|---|
++| C01 | [ ] Structured logs | События записаны в понятные поля. Например, job_id, stage, level, error_code | P06 обоих приложений |
++| C02 | [ ] Metrics | Численные показатели. Например, число ошибок или длительность обработки | P09 обоих приложений |
++| C03 | [ ] Traces | Этапы одной операции и их длительности. Например, принятие задания → обработка → webhook | P08 обоих приложений |
++| C04 | [ ] Correlation IDs | Идентификатор связывает записи одной операции. Например, запрос можно найти затем в worker-логах | P07 обоих приложений |
++| C05 | [ ] Dashboards | Панели показывают состояние по данным. Например, рост DLQ виден на графике | P10 обоих приложений |
++| C06 | [ ] Alerts | Сигнал при условии, требующем внимания. Например, очередь не уменьшается заданное время | Теория обязательна; отдельное alerting не названо в письменном минимуме |
++| C07 | [ ] Health / readiness | Жизнь процесса и готовность выполнять работу. Например, web отвечает, но новые задачи пока не принимает | P04/P05 обоих приложений |
++| C08 | [ ] Backups | Сохранение копий нужных данных. Например, копия БД и оригиналов видео | Обязательная практика PostgreSQL backup — P11; охват остальных файлов описать явно |
++| C09 | [ ] Restore | Восстановление из копии. Например, поднять отдельную учебную БД и проверить содержимое | Обязательная практика проверенного PostgreSQL restore — P12, отдельно для К и В |
++| C10 | [ ] Graceful shutdown | Остановка с корректным завершением или возвратом незавершённой работы. Например, worker перестаёт брать новые jobs | Теория обязательна; выбранные проверки Q04/Q10 и безопасная остановка/обновление в P13; отдельный полный shutdown-проект не задан |
++| C11 | [ ] RPO / RTO — базово | RPO: сколько данных допустимо потерять по времени; RTO: сколько допустимо восстанавливать. Например, час данных / два часа восстановления | Теория; числа в примере учебные, это не согласованные обязательства проекта |
++| C12 | [ ] SLI / SLO — базово | SLI: измерение качества; SLO: цель по нему. Например, доля заданий, обработанных за выбранное время, и целевой уровень этой доли | Теория; порог выбирают по задаче и не выдают за уже подтверждённый результат |
++
++**Контроль количества:** Track A — 12 пунктов, Track B — 6, Track C — 12, всего **30**. Каждый пункт учитывается отдельно.
++
++### 6.4. Повторение Level 3/4 для нового проекта
++
++**Непосредственно нужно для практики:** queue/broker/worker; retry/backoff; DLQ; idempotency; delivery guarantees; partial failures; webhooks и polling; timeouts и rate limits; согласование записи в БД с отправкой сообщения; Transactional Outbox как вариант решения.
++
++В 00:25:34 перечень прежней теории распознан неуверенно: «webhook, webhook-key, pick-key, polling…». Надёжно различимы webhooks/polling; API keys/tokens и idempotency keys согласуются с предыдущим roadmap, но не выдаются за точную цитату. **Обязательная новая реализация OAuth или всех механизмов Track A Level 4 не задана.**
++
++## 7. Связь с roadmap и доказанный прогресс
++
++| Измерение | Текущая позиция | Что приближает №5 | Что нельзя автоматически считать закрытым |
++|---|---|---|---|
++| Учебные циклы | №1–3 приняты по существующему прогрессу; №4 прошёл новое mentor review, внутренняя сверка имеет оговорки; №5 подготовлен | Новый цикл с самостоятельным async-проектом | Defense №4, Review 01 и финальные чек-листы не становятся пройденными автоматически |
++| Level / Tracks | Level 4: A/B и практика; Level 5: A/B/C | Webhook, отказы, RabbitMQ; deployment/CI/observability theory и выбранная практика | «Пятый урок» не означает полностью пройденный Level 5 |
++| Project 1 | KazanCourts: брони/погода/Kafka/outbox | Production Practice без расширения прежней функции | Не переписывать старый проект под новое задание |
++| Project 2 | Новый media-processing pipeline | Это соответствует классу Project 2 из roadmap: долгие задания, очередь, workers, отказы | Ментор не произносит номер Project 2; это сопоставление с roadmap, не его цитата |
++| CP3 | Ранее практиковались БД/транзакции/тесты; полная итоговая сверка checkpoint не предъявлена | Регрессия старого приложения, границы данных и тестов | Не закрывать весь CP3 из-за наличия PostgreSQL |
++| CP4 | В работе по прежним и новым async-сценариям | Partial failures, delivery guarantees, idempotency, failure modes, consistency и изменение архитектуры | Наличие RabbitMQ/DLQ само по себе не доказывает все критерии CP4 |
++| CP5 | Начинается Production Engineering | Понимать запуск, topology и telemetry; готовить rollback/recovery knowledge | Внешний deployment, recovery и security boundaries ещё нужно доказать по критериям |
++
++**Уже обсуждено / практиковалось:** архитектура Axyro и Defense №2; создание сервиса кортов; транзакции и ограничения БД; Kafka/outbox и симуляция уведомлений — последнее подтверждено протоколом защиты и новой встречей с ограничениями доказательств. Это не объявление всех пунктов `Done`/`Reviewed`.
++
++**In progress:** CP3/CP4, объяснение собственных решений и соответствия требованиям; теперь Level 5 A/B/C. Отдельные поздние вопросы внутренней защиты №4 нельзя превращать в фиктивные KG-ID: официальный реестр gaps меняется по своим правилам.
++
++**После №5 останется:** подтвердить все критерии CP4/CP5 по фактической работе; пройти Track D Level 5, когда ментор его задаст; закрыть накопительный Review; далее Level 6 AI Engineering и Level 7. Из Level 4 могут оставаться OAuth, API versioning, circuit breaker, Saga и другие пункты, если они отдельно не изучены и не защищены.
++
++**Ожидаемые свойства Project 2, не заданные явно в этой встрече:** отдельный scheduler и стороннее external API. Webhook даёт внешнее взаимодействие, но его достаточно ли для критерия external API — сверить с ментором. Не встраивать ненужный внешний API или планировщик лишь ради галочки. Отложенные повторы могут потребовать scheduling, но это нужно доказать фактическим решением.
++
++**Сознательное отличие от стандартной последовательности:** ментор объединяет новый Project 2 и Production Practice **обоих** приложений, тогда как roadmap предлагает productionize один из них. Следовать встрече: два приложения. Level 5 изучается параллельно с закреплением Level 4; промежуточные checkpoints не объявлять пройденными молча.
++
++## 8. Неясности и недостающие материалы
++
++| ID | Место | Что точно известно | Что не установлено | Как действовать |
++|---|---|---|---|---|
++| U01 — **снято 2026-11-06** | 00:30:00–00:31:47 + письменный список из сообщения пользователя | Получен полный переданный чек-лист из 11 пунктов; включён дословно в 5.0 и разложен на P01–P13 | Неизвестная часть письменного источника больше не является blocker. Выполнение самих P-пунктов пока не подтверждено | Backup, проверенный restore и инструкция запуска/обновления/восстановления добавлены в обязательную практику и проверки; минимум trace уточнён |
++| U02 | 00:25:03 | Верх 720p; упомянуто 480p и нижнее качество | Нижняя ступень: 360p или «320», точное число качеств и политика для маленького исходника | Рабочий кандидат 720p/480p/360p, **не утверждённый факт**. Подтвердить до фиксации acceptance-критерия качества |
++| U03 | 00:27:00 | Одна ссылка на плейлист для плеера | Произнесено m3u, неясны точное расширение и название плеера («Steam или Player» распознано ненадёжно) | Вероятная трактовка HLS + master `.m3u8`. Проверить с ментором/исходным аудио; имена библиотек не додумывать |
++| U04 | 00:25:34; 00:27:30 | Настраиваемый webhook вызывается по завершении, передаёт ссылку | Кто задаёт URL, формат payload, метод/подпись, повторы, уведомление об ошибке или только об успехе | Составить и явно принять минимальный контракт; отделить собственное решение от точного задания |
++| U05 | 00:26:24 | Видео может быть несколько гигабайт, загрузка не блокирует работу | Предельный размер/длительность, resumable upload, лимиты тестового окружения | Задать измеримые лимиты и способ проверки больших данных; маленький тест не объявлять доказательством поддержки гигабайтов |
++| U06 | 00:27:00 | Предложен инструмент для преобразования видео, техническое имя искажено | В тексте «fmpeg» | По назначению уверенно нормализуется в **FFmpeg**. Это предложение инструмента, не отдельное требование языка/стека |
++| U07 | 00:25:34 | Отсылка к прежним интеграционным темам | Точные слова «webhook-key, pick-key…» | Не создавать выдуманные термины; повторить надёжные темы раздела 6.4 |
++| U08 | 00:29:12; 00:31:47 | Два приложения: корты и новое видео; запуск, логи, checks | Фраза «теплое запуск» распознана ненадёжно; нельзя извлечь из неё дополнительный самостоятельный deployment-пункт | Письменный список подтверждает запуск Compose и инструкцию обновления/восстановления. Отдельный внешний deploy не задан |
++| U09 | Весь источник | Номер встречи и длительность есть | Дата встречи, срок, часы в день, дата следующего review | Не назначать календарь по догадке. Финал записи: написать по готовности и согласовать встречу |
++
++U01 закрыт письменным чек-листом; нерешённые U02–U05 влияют на финальные критерии реализации. Их наличие не мешает изучению теории, исследованию исходного сервиса и подготовке design, но спорные решения нельзя назвать утверждёнными словами ментора.
++
++## 9. Технические оговорки: что нельзя заучивать из транскрибации буквально
++
++1. **Dual-write и дубли — разные проблемы.** В 00:08:36–00:09:29 определение dual-write смешано с повторной обработкой. Dual-write — несогласованная запись в две системы, например PostgreSQL и брокер. Outbox связывает изменение бизнес-данных и запись исходящего события одной локальной транзакцией. Повторная доставка при этом остаётся возможной; её последствия контролируют идемпотентностью. Проверочный первичный источник: [AWS — Transactional outbox pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html), разделы Intent / Issues and considerations.
++2. **Exclusion constraint и дедупликация события решают разные задачи.** Ограничение пересекающихся времён брони не является универсальной защитой от повторного уведомления. В №5 нужно собственное объяснение, какой ключ защищает какой эффект.
++3. **Outbox не нужен автоматически «в 99% любых очередей».** Это прозвучавшее обобщение обсуждения 00:23:28. Применимость зависит от необходимости согласованно менять БД и публиковать сообщение. В новом проекте нужно разобрать конкретные окна сбоя, а не добавлять паттерн без причины.
++4. **Асинхронность не даёт безусловной доставки.** В 00:22:01 вероятна ошибка «синхронность» вместо «асинхронность». Гарантии зависят от сохранности сообщения, подтверждений, повторов и восстановления; отказ навсегда не превращается в успех обещанием брокера.
++5. **Плохое Kafka-событие не обязательно блокирует весь topic.** Ментор сам уточняет partition в 00:19:34. Не распространять обсуждение Kafka-offset напрямую на архитектуру RabbitMQ.
++6. **Health, readiness, correlation и trace — отдельные понятия.** Не считать все требования выполненными одной проверкой `/health` и одним полем job_id.
++
++Эти оговорки сохраняют смысл задания и защищают учебные материалы от ошибок автоматического распознавания и неточных обобщений разговора.
++
++## 10. Артефакты выполнения
++
++Ментор не назвал обязательные имена файлов. Пути ниже — **внутренняя организация проекта**, фиксируемая этим ДЗ. Документы нужно вести по фактическому выполнению, без фальшивых тестовых результатов.
++
++| Артефакт | Где / содержание | Что доказывает |
++|---|---|---|
++| `docs/homework-05/requirements-traceability.md` | Центральная таблица M01–M34, P01–P13, Q01–Q10, теория A/B/C, U01–U09 | Требование → источник → принятое решение → файл/функция → проверка → результат/ограничение |
++| `docs/homework-05/design.md` | В новом видеопроекте: собственное предложение, AI-review, итог; компоненты, данные, состояния, ресурсы, форматы, интерфейсы, риски | Пользователь понимает и выбирает архитектуру |
++| `docs/homework-05/reliability.md` | Контракты сообщений/webhook, подтверждения, retry/backoff, DLQ, idempotency, crash/recovery, окна записи/публикации | Пропущенная ранее надёжность теперь конкретно спроектирована и проверяема |
++| `docs/homework-05/production-practice.md` | **В каждом из двух репозиториев**; отдельная матрица P01–P13, схема запуска, конфигурация, checks, telemetry и команды | Production Practice выполнен для обоих приложений |
++| `docs/homework-05/theory-notes.md` | Единый конспект: все **30** пунктов Level 5 A/B/C + раздел 6.4, своими словами, с примерами | Теория покрыта полностью; статусы понимания не выдуманы |
++| `docs/homework-05/decision-log.md` | Несколько существенных решений: исходный вариант пользователя, замечания AI, финальный выбор и цена компромисса | Реальный Decision Trace, без восстановления авторства задним числом |
++| `docs/homework-05/testing-report.md` | **В каждом из двух репозиториев**; точные команды, среда/версии, результаты и границы проверок | Доказательства практики; центральная таблица ссылается на оба отчёта |
++| `README.md` | **В каждом из двух репозиториев**; воспроизводимый локальный запуск, настройки без секретов, тесты, демо и ссылки на обновление/восстановление | Другой человек находит инструкции всех трёх эксплуатационных сценариев |
++| `docs/homework-05/backup-restore.md` | **В каждом из двух репозиториев**; копия PostgreSQL, реальный restore, контроль данных, команды/результаты, охват файлов и ограничения | P11/P12 выполнены фактически, отдельно для двух БД |
++| `docs/homework-05/operations.md` | **В каждом из двух репозиториев**; запуск целиком, обновление и восстановление системы по разделу 5.3 | P13: три воспроизводимых сценария с порядком действий и проверками |
++| Код и конфигурация | Новый сервис; RabbitMQ/worker/обработка/плеер/webhook; эксплуатационные изменения обоих приложений; dashboard/telemetry config | Реальная реализация, а не только Markdown |
++| `Mentor_Homework_Defense_005.md` | Протокол фактически проведённой защиты | Понимание пользователя отдельно от наличия артефактов |
++| `Mentor_Learning_Pack_005.md` | После финальной приёмки, по Addendum; до неё только Draft по запросу | Фактически пройденное для голосового повторения; не замена ДЗ/проверки |
++
++Центральные документы можно держать в новом видеопроекте; в сервисе кортов достаточно своих `production-practice.md`, `backup-restore.md`, `operations.md`, `testing-report.md`, README и ссылок. Точные реальные пути репозиториев определить при первом чтении. Не дублировать весь конспект в оба проекта. Если требуется другое имя обязательного файла, согласовать замену явно и обновить матрицу, а не молча подменять.
++
++Каждая строка доказательств различает: **запланировано → реализовано → проверено автоматически → показано вручную → объяснено пользователем → Reviewed**. «Есть файл» не равно «всё освоено».
++
++## 11. Последовательность учебных блоков
++
++Это **предварительный маршрут**, не утверждённый календарь и не ограничения ментора по числу занятий. Каждый блок при необходимости делится на короткие сессии. Дата/день недели назначаются только после известного графика.
++
++### Блок 1. Источники, границы и исходное состояние — 1–2 часа
++
++**Цель:** не повторить пропуск требований. **Теория:** scope/constraints и уровни доказательств; разделы 2–3 этого файла, без новой реализации. **Практика:** сверить уже полученный письменный Production Practice с P01–P13; уточнить оставшиеся U02–U05; открыть оба учебных проекта/создать место для нового, проверить branch/status и baseline старого. **Результат:** заполненный источник и первичная traceability. **Проверка:** каждому слышимому поручению соответствует ID, спорные решения помечены. **Риск:** задание агента начинает отличаться от задания ментора. **Контроль:** все 11 строк полученного списка перенесены в критерии, backup/restore и runbook не потеряны? **Следом:** личный design нового сервиса.
++
++### Блок 2. Архитектура, данные и состояния видеосервиса — 2–3 часа
++
++**Теория:** sync/async, worker/broker, состояния задания; разделы 4 и 6.4, S1/S2. **Практика:** пользователь предлагает компоненты, контракты, хранение, лимиты и поток; AI проверяет; выбирается минимальный стек с RabbitMQ. **Результат:** `design.md` + первые записи `decision-log.md`. **Доказательство:** схема с понятными входами/выходами и реальной историей решения. **Критерий:** пользователь объясняет, что находится в БД, хранилище и брокере. **Риск:** копирование старого стека без причины. **Вопрос:** какой минимальный набор качеств принят? **Следом:** первый путь загрузки.
++
++### Блок 3. Загрузка и сохранение оригинала — 2–4 часа
++
++**Теория:** A02/A03/A09 и различие загрузки/обработки, S4/S5. **Практика:** минимальный веб-интерфейс, сохранение файла без чтения гигабайтов целиком в память, идентификатор/состояние задания. **Результат:** рабочая загрузка и доступный worker исходник. **Проверка:** исходник сохранён, частичная загрузка не выдаётся за готовую, интерфейс отзывчив. **Риск:** диск, память и потеря файла при пересоздании контейнера. **Вопрос:** как измеряем большой файл? **Следом:** реальный broker/worker.
++
++### Блок 4. RabbitMQ и фоновое выполнение — 2–4 часа
++
++**Теория:** очередь, exchange, routing key, acknowledgements и publisher confirms — подтверждения разных участков доставки; S1/S2, только указанные разделы. **Практика:** публикация задания, получение worker, результат и выбранная политика подтверждений. **Результат:** реальное сообщение проходит через RabbitMQ. **Проверка:** broker/worker не заменены mock в демонстрации; веб-ответ не ждёт перекодирования. **Риск:** подтверждение до сохранения результата и окно потери при публикации. **Вопрос:** что произойдёт при падении в каждой границе? **Следом:** получение нескольких качеств.
++
++### Блок 5. Перекодирование и один воспроизводимый результат — 3–5 часов
++
++**Теория:** производные версии, плейлист, сегменты, ограничения ресурсов; S3, только HLS-часть. **Практика:** несколько принятых качеств с верхом 720p, исходник сохранён, одна ссылка и проверка в подходящем плеере. FFmpeg — рекомендуемый инструмент. **Результат:** M02/M05/M06/M08/M09. **Доказательство:** реальные размеры/разрешения, доступность файлов, воспроизведение. **Риск:** один MP4 назван адаптивным результатом; маленький исходник искусственно растянут без решения. **Вопрос:** что делать с частично созданными вариантами? **Следом:** уведомление.
++
++### Блок 6. Настраиваемый webhook — 2–3 часа
++
++**Теория:** webhook vs polling, timeout, retry, idempotency; раздел 6.4 и S1. **Практика:** локальный контролируемый получатель, выбранный payload со ссылкой, вызов после готовности, запись результата доставки. **Результат:** успешный callback и понятный сбой доставки. **Проверка:** получатель получил реальную доступную ссылку; его ошибка не запускает повторное перекодирование. **Риск:** смешать «видео готово» и «уведомление доставлено». **Вопрос:** какие ответы считаются временной/окончательной ошибкой? **Следом:** DLQ и crash-сценарии.
++
++### Блок 7. Retry, DLQ, повторная доставка и восстановление — 3–5 часов
++
++**Теория:** Q01–Q10, ошибки/повторы/outbox, S1/S2/S12. **Практика:** bounded retry, реальная DLQ, исправное задание после плохого, crash/restart, дубль, ошибка webhook, окно между БД и публикацией. **Результат:** `reliability.md` и фактические failure tests. **Проверка:** не только happy path; видны причина, попытки, судьба сообщения и итоговый бизнес-эффект. **Риск:** бесконечный requeue, потеря сообщения на пути в DLQ, ложное «exactly once». **Вопрос:** что гарантировано при выбранной конфигурации? **Следом:** запуск и эксплуатация обоих приложений.
++
++### Блок 8. Deployment theory и запуск обоих приложений — 3–5 часов
++
++**Теория:** весь Track A, источники S4/S5/S6; для VPS/PaaS/DNS/TLS — объяснение по реальной схеме без обязательной покупки сервера. **Практика:** P01–P05 в К и В: Compose, environment, secrets, health/readiness. **Результат:** две воспроизводимые инструкции и эксплуатационные матрицы. **Проверка:** старт, неготовность зависимости, восстановление; данные сохраняются в пределах выбранной политики. **Риск:** сломать старый сервис или вывести секреты. **Граница:** письменный список требует запуска Compose и инструкции обновления/восстановления, но не отдельного внешнего deployment. **Следом:** понять CI/CD.
++
++### Блок 9. CI/CD theory и фактический pipeline — 2–3 часа
++
++**Теория:** весь Track B, S7. **Практика:** объяснить существующие workflows, build/check/test/artifacts и границы release/rollback; добавить только необходимое по принятому scope. **Результат:** все B01–B06 отражены в `theory-notes.md`, реальные результаты в отчётах. **Критерий:** пользователь отличает зелёные тесты от deployment. **Риск:** включить автоматический внешний deploy без разрешения. **Контроль:** инструкция обновления P13 обязательна; автоматический внешний CD не превращать в скрытое поручение. **Следом:** telemetry.
++
++### Блок 10. Logs, correlation, traces, metrics, dashboards — 4–6 часов
++
++**Теория:** C01–C05/C07, S8/S9/S10. **Практика:** P06–P10 для К и В, один выбранный запрос/сценарий прослеживается до фоновой работы; успех и сбой отражаются на панели. **Результат:** две доказанные наблюдаемые цепочки и сохранённая конфигурация. **Проверка:** по telemetry пользователь находит выбранный сбой, объясняет показатель и этап. **Риск:** красивые панели без актуальных данных; логи приняты за traces. **Вопрос:** какие данные действительно помогают диагностике? **Следом:** оставшаяся reliability theory.
++
++### Блок 11. Проверенные backup/restore, инструкция эксплуатации и оставшаяся reliability theory — 4–7 часов
++
++**Теория:** C06/C08/C09/C10/C11/C12, S9/S11/S13. **Обязательная практика:** для каждого приложения выполнить PostgreSQL backup, восстановить в отдельную чистую учебную БД, проверить данные и работу приложения; подготовить и проверить локальные инструкции запуска, обновления и восстановления системы. **Результат:** `backup-restore.md`, `operations.md` и доказательства P11–P13 в обоих репозиториях; оставшиеся темы Track C объяснены без пропусков. **Проверка:** реальный restore и контроль содержимого, а не наличие dump-файла; охват видеофайлов/секретов/конфигурации указан отдельно; инструкция обновления не равна автоматическому CD. **Риск:** восстановление поверх исходной БД, потеря файлов вне PostgreSQL, несовместимость приложения и схемы. **Критерий:** оба приложения способны работать с восстановленными учебными данными, команды и ограничения записаны. **Следом:** итоговая приёмка артефактов.
++
++### Блок 12. Проверки, демонстрации и заполнение evidence — 2–4 часа
++
++**Теория:** граница тестовых доказательств и регрессия. **Практика:** матрица раздела 12, оба `testing-report.md`, README, changed files/diff, секреты, U-пункты, подготовка показа. **Результат:** каждый Core-пункт имеет свидетельство или явно открыт. **Критерий:** полный воспроизводимый комплект, без выдуманных результатов. **Риск:** закрыть требование ссылкой на план. **Вопрос:** что не запускалось и почему? **Следом:** автоматический переход в Defense после готовности всех обязательных артефактов.
++
++### Блок 13. Homework Defense и подготовка к ментору — 1–2 часа + 1–2 часа резерва
++
++**Теория:** новое чтение не заменяет самостоятельный ответ. **Практика:** по одному вопросу, карта покрытия Core, критические сценарии, затем адресное обучение и повторная проверка слабого. **Результат:** реальный протокол защиты, вопросы ментору и воспроизводимое демо. **Критерий:** раздел 14. **Риск:** выдать уверенную работу агента за понимание пользователя. **Следом:** пользователь сообщает о готовности и договаривается о встрече.
++
++**Предварительная оценка:** блоки 1–12 — примерно 30–51 час; Defense и резерв — 2–4 часа; отладочный запас порядка 20–30% добавляется отдельно. Это инженерная оценка ассистента с большой неопределённостью, не срок ментора и не обещание уложить весь объём в одну неделю. Письменный чек-лист уже учтён; после baseline и выбора точного объёма сценариев оценку пересчитать. Изучение существующей теории может идти быстрее, новая инфраструктура — медленнее.
++
++## 12. Матрица необходимых проверок
++
++Это внутренние критерии качества. Конкретные тестовые инструменты и команды выбираются после чтения репозиториев, а не придумываются здесь как уже выполненные.
++
++| ID | Проверка | Нужное наблюдение | Чего она сама по себе не доказывает |
++|---|---|---|---|
++| F01 | Загрузка корректного видео | Исходник сохранён, задание имеет устойчивый ID, браузер не ждёт перекодирования | Поддержку нескольких гигабайт |
++| F02 | Большой файл в принятых лимитах | Размер/время/память/диск измерены; приложение остаётся работоспособным | Безграничный размер или полноценный resumable upload |
++| F03 | Реальный RabbitMQ → worker | Сообщение опубликовано и обработано реальным брокером | Все crash-гарантии при одном happy path |
++| F04 | Несколько качеств и воспроизведение | Правильные варианты, верх 720p, одна ссылка, плеер воспроизводит | Поддержку любого видеокодека и любого браузера |
++| F05 | Успешный webhook | Настроенный локальный получатель получает ссылку после готовности | Доставку во все внешние сервисы |
++| F06 | Некорректное видео/сообщение | Ошибка классифицирована, попытки ограничены, итог в DLQ/согласованном terminal state | Корректность всех видов повреждения файлов |
++| F07 | Исправное задание после проблемного | Система продолжает обработку | HA/кластерную отказоустойчивость |
++| F08 | Падение worker в выбранной границе | Устойчивая судьба задания, повтор безопасен | Гарантию сохранности при полной потере диска |
++| F09 | Повтор того же задания | Нет повреждения/неконтролируемых дублей; объяснимый итог | Глобальную «exactly once» семантику всей системы |
++| F10 | Получатель webhook недоступен/отвечает ошибкой | Ограниченный retry, готовый результат сохранён, перекодирование не повторяется | Неограниченную будущую доставку |
++| F11 | Недоступность брокера / ошибка публикации | Наблюдаемое состояние, выбранное восстановление; окно потери описано | Неуязвимость любой конфигурации RabbitMQ |
++| F12 | Частичный результат / ошибка процесса обработки | Незавершённые файлы не выдаются за полностью готовый результат | Исчерпывающую поддержку всех контейнеров/кодеков |
++| F13 | Compose, конфигурация и checks — **два приложения** | Воспроизводимый запуск; health/readiness отражают выбранные состояния | Реальный production-deployment |
++| F14 | Telemetry — **два приложения** | Коррелированные логи, trace, изменяющиеся метрики, полезная панель | Выполнение SLO без статистики и согласованной цели |
++| F15 | Регрессия кортов | Прежние сценарии и бизнес-правила сохранились | Полную повторную защиту всех старых ДЗ |
++| F16 | PostgreSQL backup — **два приложения** | Созданы реальные копии с известными версиями/форматом/командами и контрольными данными | Возможность восстановления, пока F17 не выполнен; сохранность видеофайлов вне БД |
++| F17 | Проверенный PostgreSQL restore — **два приложения** | Копии реально восстановлены в отдельные чистые учебные БД, проверены схема, записи/связи и работа приложения | Восстановление любого объёма данных и всей файловой инфраструктуры без отдельной проверки |
++| F18 | Инструкция запуска, обновления и восстановления — **два приложения** | По реальным командам проверены локальный запуск, переход на выбранную версию и восстановление; сохранность данных/конфигурации и условия готовности указаны | Внешний production-deployment или автоматический безусловный rollback всех данных |
++
++В `testing-report.md` для каждой проверки хранить: версия/среда → команда или точные действия → входные данные → ожидание → фактический результат → passed/failed/skipped → ограничение. Различать unit/mock, integration с реальными PostgreSQL/RabbitMQ и ручную демонстрацию.
++
++## 13. Mandatory / Core, Optional и Defense Reserve
++
++### 13.1. Mandatory / Core
++
++- Все явно заданные результаты M01–M12, M14–M28 и письменные дополнения M33–M34; M13/DLQ — обязательный вывод по контексту, который нельзя снова упустить.
++- Все 13 критериев P01–P13 в **обоих** приложениях: включая PostgreSQL backup, проверенный restore, хотя бы один сквозной trace на приложение и инструкцию запуска/обновления/восстановления.
++- Теория всех **30 пунктов** Level 5 A/B/C и непосредственно необходимых тем Level 3/4 из раздела 6.4.
++- Согласованные решения по U02–U05. U01 закрыт получением письменного списка; это не означает выполнения P01–P13 — каждому нужны свои доказательства.
++- Надёжность Q01–Q10 в минимальном принятом дизайне, без лишних инфраструктурных компонентов.
++- Артефакты раздела 10, проверки раздела 12, регрессия старого сервиса, правдивые evidence и история решений.
++- Осознанная работа с Codex по M29–M31; организационный M32 выполняет пользователь, когда работа готова.
++
++### 13.2. Optional / Recommended
++
++- **FFmpeg** — рекомендованный ментором инструмент; обязательна сама обработка видео, а не механическое использование конкретной команды.
++- **Grafana** — предложенный инструмент; обязательна полезная monitoring/dashboard-возможность, иной инструмент допускается ментором.
++- Resumable/chunked upload, удобный прогресс-бар, отдельная admin UI для DLQ — только если оправданы согласованными требованиями; не подменяют базовую надёжность.
++- Конкретный secret manager, S3-совместимое хранилище, подробный UI/дизайн, дополнительный UI выбора качества — возможные решения, не самостоятельные обязательные поручения.
++- Alerts, отдельный внешний deployment и другие не перечисленные практические расширения — по отдельному указанию/обоснованному выбору; обязательная теория A/B/C при этом остаётся полной. PostgreSQL backup/restore и инструкция обновления/восстановления уже входят в Core.
++
++### 13.3. Defense Reserve / Overlearning
++
++Эти вопросы нужны для более глубокой подготовки и не создают скрытую обязанность реализовать всё перечисленное:
++
++- Worker завершил FFmpeg и упал до подтверждения сообщения: что повторится и почему результат не испортится?
++- Webhook получатель выполнил действие, но ответ потерялся: почему повтор возможен и как взаимодействовать с дедупликацией получателя?
++- Брокер подтвердил сообщение, а клиент не получил подтверждение: что нельзя достоверно заключить?
++- Что произойдёт при недоступности dead-letter exchange/очереди; какие ограничения имеет выбранный механизм переноса?
++- Два workers одновременно взяли конкурирующие задачи; где находятся блокировки/уникальность и что можно безопасно повторить?
++- Закончился диск или осталась только часть качеств: когда результат нельзя публиковать как ready?
++- У задачи истёк старый URL или исходник удалён: какая политика хранения и повторной обработки нужна?
++- Почему зелёная readiness web не доказывает работающий worker; какой сигнал заметит зависшую очередь?
++- Почему откат образа не всегда откатывает миграцию и данные; что нужно для совместимости версий?
++- Что придётся изменить для внешних недоверенных загрузок и произвольных webhook URL? Полный security track здесь не реализуется автоматически.
++
++## 14. Homework Defense и окончательная приёмка
++
++### 14.1. Запуск защиты
++
++Как только все обязательные артефакты созданы в проверяемом виде, автоматически начинается Homework Defense; статус №5 становится `Проверяется`. Не ждать отдельного запроса «начни экзамен».
++
++Ориентир — **60–120 минут**, допускаются несколько сессий. Отдельный резерв на исправление пробелов — ещё 60–120 минут. Вопросы строго по одному, без предварительной выдачи правильного ответа.
++
++### 14.2. Критические пункты
++
++1. Полный путь видео: браузер → сохранённый оригинал → задание → RabbitMQ → worker → результат → плейлист/плеер → webhook.
++2. RabbitMQ вместо Kafka: зачем очередь нужна здесь, что содержит сообщение и чем подтверждения публикации отличаются от подтверждения обработки.
++3. Retry/backoff/DLQ: попытки конечны, проблемное задание не блокирует исправные, причина доступна для разбора.
++4. Повторная доставка, падение после побочного эффекта, раздельная готовность видео и доставка уведомления.
++5. Источник истины, сохранность оригинала/результатов, границы транзакции и окно БД→брокер.
++6. Compose/environment/secrets и health/readiness **каждого** приложения; реальные зависимости и данные.
++7. Различия logs/metrics/traces/correlation; самостоятельная диагностика выбранного сбоя по telemetry.
++8. Фактические PostgreSQL backup и проверенный restore обоих приложений: состав копии, команды, проверка данных и граница относительно файлов. Пользователь объясняет и воспроизводит инструкции запуска, обновления и восстановления; теория CI/CD, rollback и целей надёжности защищается отдельно.
++9. Отличие поручения ментора, собственного решения и предложения AI; сверка финальной реализации с исходным требованием.
++10. Границы доказательств: что действительно запускалось, что только спроектировано, что остаётся неизвестным.
++
++### 14.3. Проходной критерий и конфликт формулировок источников
++
++Текущая инструкция пользователя в проекте задаёт порог **80%**, при этом критические пункты защищаются отдельно. Подробный загруженный регламент и документ №4 содержат формулировку **Core 100% + Stress Round**. Расхождение фиксируется явно: для №5 применяется прямая текущая инструкция пользователя — **не менее 80% по карте защиты и отдельно защищённые критические пункты**. Не подменять это молча другим порогом.
++
++До старта экзамена зафиксировать карту вопросов и способ подсчёта: `Уверенно` — 1, `Частично` — 0,5, `Слабо / Нет ответа` — 0; процент от максимума всей карты. Это **предлагаемый внутренний способ**, его принять явно до оценивания. Критические пункты независимо от общего процента должны быть `Уверенно`; слабые ответы разбираются и повторно проверяются новым вопросом. Обязательные требования реализации и артефакты должны быть выполнены полностью: 80% знаний не разрешают пропустить DLQ или второй проект.
++
++После Passed Homework остаётся `Проверяется`. `Завершено` возможно после фактического review ментора, обработки его замечаний и финальной сверки каждого требования с доказательством. Обновить `Mentor_Progress.md`, затем создать `Mentor_Learning_Pack_005.md` по Addendum. До этого Pack, если нужен, только Draft.
++
++## 15. Что показать ментору и что у него уточнить
++
++### Демонстрация
++
++1. Новый сервис: загрузка → исходник сохранён → RabbitMQ → несколько качеств → одна воспроизводимая ссылка → webhook со ссылкой.
++2. Плохое задание → ограниченные повторы → DLQ; затем исправное задание успешно обрабатывается.
++3. Падение/повтор worker и сбой webhook с сохранением готового результата.
++4. Два приложения: Compose/environment/secrets/checks и telemetry; одна показанная неисправность найдена по данным наблюдения.
++5. Для обоих приложений: резервная копия PostgreSQL, реальный restore в чистую учебную БД, контроль восстановленных данных и работа приложения; затем инструкции запуска, обновления и восстановления системы.
++6. Таблица требований с явными отклонениями, непроверенным и решениями пользователя; никакого скрытого функционального рефакторинга кортов.
++
++### Короткий список уточнений
++
++1. Полный Production Practice уже получен и включён. Уточнить только глубину показа: достаточно ли локального восстановления двух PostgreSQL и двух воспроизводимых runbooks без внешнего размещения? Саму обязательность backup/restore больше не ставить под вопрос.
++2. Верно ли нижнее качество 360p и ожидается ли HLS master `.m3u8` для одной ссылки? Что делать, если исходник ниже выбранных разрешений?
++3. Какой минимальный контракт webhook ожидается и достаточно ли контролируемого локального получателя для показа?
++4. Какой размер/длительность видео нужно фактически продемонстрировать? Требуется ли возобновляемая загрузка?
++5. Требуются ли дополнительно реальный внешний deployment, alerting или отдельная демонстрация rollback/graceful shutdown? Письменный минимум их не задаёт; PostgreSQL backup/restore и инструкция обновления/восстановления уже обязательны.
++
++Ответы должны обновить соответствующие U-пункты и Core/evidence-матрицу. Пока ответов нет, не записывать догадки как согласованный контракт.
++
++## 16. Источники для точечного чтения
++
++**Дополнительный письменный источник:** полный чек-лист Production Practice из сообщения пользователя 2026-11-06, дословно сохранён в 5.0 и применён к двум приложениям.
++
++**Постоянные материалы, использованные для оформления:** `Project_Instructions_Mentor_Homework.md` (доступное имя подробного регламента), `ai_native_engineering_roadmap.md`, `Mentor_Homework_004.md`, `Mentor_Progress.md`, `Mentor_Knowledge_Gaps.md`, `Mentor_Homework_Defense_004_IN_PROGRESS.md`, `Mentor_Track_Learning_Pack_Addendum_RU.md` и фактический шаблон `Mentor_Review_01.md`. Суффиксы загрузчика в логических именах не учитываются. HTML-roadmap не заменял Markdown.
++
++Приоритет — исходные материалы ментора и официальный roadmap. Ниже дополнительные первичные источники. Все страницы бесплатны для чтения, язык **EN**, кроме локального roadmap **RU**; устанавливать платные продукты или проходить весь курс/документацию не требуется. Ссылки на официальные источники проверены при подготовке 2026-11-06; инструкции исполнения адаптировать к фактическим версиям.
++
++| ID | Точное название и ссылка | Что читать / где остановиться | Время и цель |
++|---|---|---|---|
++| S0 | `ai_native_engineering_roadmap.md` | Level 4 Practice/CP4; Level 5 A/B/C и CP5. Track D только для понимания отложенной границы | 15–25 мин: различать теорию, практику и checkpoint |
++| S1 | [RabbitMQ — Reliability Guide](https://www.rabbitmq.com/docs/reliability) | What Can Fail; Connection Failures; Data Safety on the Publisher/Consumer Side. Не переходить автоматически к clustering | 25–35 мин: понимать, кто отвечает за сохранность сообщения |
++| S2 | [Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms) и [Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx) | The Basics; positive/negative acknowledgements, requeue; DLX definition/configuration/safety. Остановиться до полного справочника всех options | 35–50 мин: проектирование Q01–Q05/Q09, различать ack/confirm/DLX/DLQ |
++| S3 | [FFmpeg — Formats Documentation](https://www.ffmpeg.org/ffmpeg-formats.html) | Только HLS: variants, `var_stream_map`, `master_pl_name`; не читать все muxers. Основная страница при прямом открытии отвечала нестабильно; HLS-раздел также подтверждён [официальным исходником документации FFmpeg](https://github.com/FFmpeg/FFmpeg/blob/master/doc/muxers.texi) | 25–40 мин: понять мастер-плейлист и несколько качеств; команды выбираются после design |
++| S4 | [Docker Compose](https://docs.docker.com/compose/) | Вводное объяснение и How Compose works; на общих понятиях services/networks/volumes остановиться | 15–25 мин: карта процессов обоих приложений |
++| S5 | [Environment variables in Compose](https://docs.docker.com/compose/how-tos/environment-variables/) и [Manage secrets securely in Docker Compose](https://docs.docker.com/compose/how-tos/use-secrets/) | Set environment variables / precedence по ссылкам страницы; Use secrets и один пример. Не изучать весь набор Docker security | 25–35 мин: P02/P03, различать настройки и секреты |
++| S6 | [Control startup and shutdown order in Compose](https://docs.docker.com/compose/how-tos/startup-order/) | Control startup и один пример `service_healthy`; остановиться до связанного reference | 15–20 мин: контейнер запущен не равно приложение готово |
++| S7 | [GitHub — Understanding GitHub Actions](https://docs.github.com/en/actions/get-started/understand-github-actions) и [Workflow artifacts](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts) | Overview, workflow/job/step/runner, назначение artifacts. Не весь раздел Actions | 25–35 мин: B01–B04 на своём workflow |
++| S8 | [OpenTelemetry — Signals](https://opentelemetry.io/docs/concepts/signals/) | Обзор; перейти только к Traces, Metrics, Logs, Context propagation для различий. Полные SDK tutorials пока не проходить | 25–40 мин: P06–P09, не путать логи и трассировку |
++| S9 | [Prometheus — Overview](https://prometheus.io/docs/introduction/overview/) | What is Prometheus / metrics / components; alerting читать обзорно по прямому разделу страницы | 15–25 мин: роль измерений и сигналов, без обязательного полного стека |
++| S10 | [Grafana — Dashboards](https://grafana.com/docs/grafana/latest/visualizations/dashboards/) | Overview и понятия panel/data source; далее ровно один нужный способ построения панели | 15–25 мин: P10, панель должна отвечать на диагностический вопрос |
++| S11 | [PostgreSQL — Backup and Restore](https://www.postgresql.org/docs/current/backup.html) | Обзор трёх подходов; SQL Dump / Restoring the Dump только в нужном объёме. Не выполнять restore поверх исходных данных | 20–30 мин: C08/C09, различать копию и доказанное восстановление |
++| S12 | [AWS — Transactional outbox pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) | Intent, Motivation, Issues and considerations. Остановиться до AWS sample implementation | 15–20 мин: dual-write отдельно от дублей, без внедрения AWS |
++| S13 | [Google SRE — Service Level Objectives](https://sre.google/sre-book/service-level-objectives/) | Indicators и Objectives; не переходить к чтению всей SRE Book | 20–30 мин: разница измерения SLI и цели SLO |
++
++Эта подборка не заменяет простое объяснение полного Track A/B/C: VPS/PaaS/cloud, DNS/TLS, migrations/rollback, RPO/RTO и shutdown также обязательны по roadmap, даже если не имеют отдельной страницы в таблице. Перед практикой соответствующего блока подобрать точечный официальный раздел под фактический стек, а не исключать тему.
++
++## 17. Безопасность выполнения и итоговый чек-лист
++
++Только учебные данные и локальные контролируемые получатели webhook. До изменения каждого репозитория: ветка, `git status`, scope. После: changed files, diff, подходящие проверки, review. Пароли/токены/реальные credentials не запрашивать и не помещать в артефакты. Публичный webhook endpoint и работа с недоверенными файлами требуют отдельной оценки перед внешним размещением.
++
++Push, PR, merge, deployment и изменения внешних сервисов/production-БД/production-Redis — только по явному подтверждению пользователя. Подготовка задания такого разрешения не даёт.
++
++- [ ] Исходная транскрибация сохранена; M01–M34 сверены, а не восстановлены по памяти.
++- [ ] Получен и сверен полный Production Practice; U01 закрыт по источнику, а все 11 исходных строк имеют критерии P01–P13.
++- [ ] Приняты и зафиксированы решения U02–U05; остальные неясности имеют явный статус.
++- [ ] Новый проект использует RabbitMQ; оригинал сохранён; несколько качеств с верхом 720p; одна воспроизводимая ссылка; настроенный webhook.
++- [ ] Есть реальная DLQ, ограниченные повторы, безопасный дубль и восстановление; исправные задачи продолжают обрабатываться.
++- [ ] Production Practice подтверждён **для двух приложений**, отдельно по каждому P01–P13.
++- [ ] Для каждого приложения есть request/job correlation ID и хотя бы один реальный сквозной trace.
++- [ ] PostgreSQL backup **и фактический проверенный restore** выполнены для К и В; проверены данные и работа приложений.
++- [ ] В обоих приложениях есть инструкции запуска, обновления и восстановления системы; команды и проверки результата воспроизводимы, охват файлов указан.
++- [ ] Изучены и проверены **30** тем Level 5 A/B/C; полный Track D не добавлен молча.
++- [ ] Старый погодный поток не переписан как якобы обязательная часть №5.
++- [ ] Все внутренние обязательные файлы существуют или их замена явно согласована.
++- [ ] Есть фактические результаты F01–F18 в применимом объёме, команды воспроизведения, Git/diff/review и проверка отсутствия секретов.
++- [ ] Защита проведена, критические темы защищены; прохождение не выдумано заранее.
++- [ ] Пользователь подготовил вопросы и по готовности договорился о mentor review.
++- [ ] После mentor review замечания обработаны, каждый обязательный пункт принят по доказательству.
++- [ ] Только после финальной приёмки: `Завершено`, обновление `Mentor_Progress.md`, фактический `Mentor_Learning_Pack_005.md`.
++- [ ] Состояние №4 и накопительного Review 01 учтено отдельно, без автоматического закрытия или фиктивных результатов.
++
++## 18. Проверка полноты извлечения из записи
++
++| Диапазон записи | Куда перенесено содержание |
++|---|---|
++| 00:00:56–00:10:34 | Review №4, история работы с AI, outbox/дубли: разделы 2, 9, M29/M30 |
++| 00:11:14–00:14:03 | Расхождение первоначального Kafka-flow и факта, часовой weather check / правило 72h: раздел 2; не превращено в новую задачу |
++| 00:14:32–00:19:34 | Пропуск DLQ, обоснование и риск partition: M13, Q01–Q05/Q09, раздел 9 |
++| 00:20:06–00:23:28 | Выбор Kafka/очереди/outbox, ограничения обобщений: разделы 2, 6.4, 9 |
++| 00:24:03–00:27:30 | Полный video flow, original, качества, фон, масштаб, плейлист, webhook: M01–M11, U02–U07 |
++| 00:28:13–00:29:12 | Весь Level 5 A/B/C, Track D отложен: M14–M17, все 30 тем раздела 6 |
++| 00:29:12–00:30:41 | Production Practice для двух приложений и обещанный письменный список: M18–M27, P01–P13; дополнено письменными M33–M34, U01 снят |
++| 00:30:41–00:31:47 | RabbitMQ, упор на пропусках, ограничение доработок старого проекта: M12/M13/M28 |
++| 00:31:47–00:35:52 | Оценка прогресса и способ понимать планы Codex: раздел 2, M29 |
++| 00:36:00–00:39:35 | Сверка требований и реализации, ограничение AI, возврат к непонятной теории: M30/M31 |
++| 00:39:35–00:40:27 | Написать по готовности, согласовать встречу; дальнейших технических поручений в окончании нет: M32/U09 |
++
++**Состояние на момент составления:** подготовлен только документ задания. Код, инфраструктура, проверки, пройденная теория и успешная Defense №5 здесь не заявляются. Извлечение покрывает предоставленную текстовую транскрибацию целиком; возможные пропуски автоматического распознавания и оставшиеся U02–U09 отмечены отдельно. Письменное сообщение Production Practice уже получено, включено и больше не считается отсутствующим источником.
++
++## 19. Журнал редакций
++
++- **Редакция 1, 2026-11-06:** задание извлечено из полной транскрибации; отсутствие письменного Production Practice отмечено как U01.
++- **Редакция 2, 2026-11-06:** пользователь передал 11 пунктов письменного Production Practice. Они сохранены дословно в 5.0 и разложены на P01–P13. Добавлены M33–M34, обязательные PostgreSQL backup/проверенный restore, инструкции запуска/обновления/восстановления, артефакты `backup-restore.md`/`operations.md` в двух приложениях и проверки F16–F18. Уточнены request/job correlation, базовый объём metrics/dashboard и минимум одного сквозного trace на приложение. U01 закрыт только по полноте источника; работа и проверки не объявлены выполненными. Остальные неоднозначности видео сохранены. Предварительная оценка блока 11 и общего объёма увеличена.
+diff --git a/docs/homework-05/sources/ai_native_engineering_roadmap.md b/docs/homework-05/sources/ai_native_engineering_roadmap.md
+new file mode 100644
+index 0000000..1962dd8
+--- /dev/null
++++ b/docs/homework-05/sources/ai_native_engineering_roadmap.md
+@@ -0,0 +1,573 @@
++# AI-Native Engineering Roadmap
++
++## Goal
++
++Перейти от **AI-assisted / vibe coding**, где агент в значительной степени сам выбирает архитектуру и технологии, к состоянию, где менти:
++
++- понимает назначение основных компонентов современной системы;
++- может оценивать предложения AI и задавать ему правильные ограничения;
++- самостоятельно принимает ключевые архитектурные решения;
++- умеет объяснить trade-offs и отказаться от ненужной сложности;
++- использует AI как сильного исполнителя и консультанта, а не как единственного архитектора;
++- способен спроектировать, реализовать и довести до production собственный сервис.
++
++## Как проходить roadmap
++
++Roadmap **не привязан к неделям или месяцам**. Уровни могут частично пересекаться.
++
++Тема считается пройденной, когда менти может:
++
++1. объяснить её своими словами;
++2. объяснить, какую проблему она решает;
++3. привести пример, когда её **не стоит** использовать;
++4. применить знание в проекте;
++5. защитить принятое решение на review.
++
++Статусы:
++
++- [ ] Not started
++- [~] In progress
++- [x] Done
++- [R] Reviewed
++
++---
++
++# Level 1 — Foundation
++
++## Track A — AI-native workflow
++
++- [ ] AGENTS.md / CLAUDE.md / project instructions
++- [ ] Skills: что это, зачем нужны, где полезны
++- [ ] MCP: назначение и отличие от skills/tools
++- [ ] Tools и permissions
++- [ ] Subagents / delegation
++- [ ] Context management
++- [ ] Planning → implementation → review → fix
++- [ ] Выбор модели и reasoning effort
++- [ ] Scope и constraints для агента
++- [ ] Git / branches / PR как safety mechanism
++
++### Definition of Done
++
++Менти может показать свой рабочий AI-development workflow и объяснить, зачем нужен каждый его этап.
++
++## Track B — Engineering foundations
++
++- [ ] Frontend / Backend / API
++- [ ] Process / Service / Container
++- [ ] Stateful vs Stateless
++- [ ] Database vs Cache
++- [ ] SQL vs NoSQL
++- [ ] PostgreSQL: зачем relational database
++- [ ] Redis: cache / broker / ephemeral state
++- [ ] HTTP basics
++- [ ] REST API basics
++
++### System Design orientation
++
++Ознакомительно прочитать **главы 2–3 System Design Interview**.
++
++Цель сейчас — не запомнить детали, а увидеть цепочку:
++
++**requirements / scale / failure mode → architectural decision**
++
++После чтения уметь привести несколько примеров:
++
++- много повторных чтений → возможно, cache;
++- долгая операция → возможно, background job / queue;
++- несколько backend instances → load balancing;
++- рост нагрузки на storage → replication / partitioning как возможные направления.
++
++## Track C — Quality basics
++
++- [ ] Test pyramid
++- [ ] Unit tests
++- [ ] Integration tests
++- [ ] E2E / acceptance tests
++- [ ] Что именно должен доказывать тест
++- [ ] Happy path vs edge cases
++
++## Practice — Project 0: Axyro
++
++Axyro используется как **диагностический sandbox**, а не как проект на весь roadmap.
++
++- [ ] Создать/улучшить `AGENTS.md`
++- [ ] Разобраться, зачем в Axyro PostgreSQL
++- [ ] Разобраться, зачем в Axyro Redis
++- [ ] Разобраться, зачем в Axyro Celery
++- [ ] Посмотреть текущую структуру проекта
++- [ ] Выписать компоненты, назначение которых пока непонятно
++- [ ] Определить, что выглядит необходимым, а что потенциально overengineered
++- [ ] Сделать небольшое изменение через plan → implement → review → fix
++
++## CP1 — Foundation checkpoint
++
++Готово, когда:
++
++- AI workflow стал явным и повторяемым;
++- появился понятный project context для агента;
++- понятна разница Skills / MCP / Tools / Subagents;
++- понятна роль PostgreSQL / Redis / Celery в Axyro;
++- понятно различие DB / cache / queue;
++- понятны основные уровни тестирования.
++
++---
++
++# Level 2 — Application Structure
++
++## Track A — AI control
++
++- [ ] Scope control
++- [ ] Constraints
++- [ ] Проверка changed files / diff
++- [ ] Structured prompting
++- [ ] Review strategy
++- [ ] Использование разных агентов для plan / implementation / review
++- [ ] Model / effort selection
++
++## Track B — Architecture
++
++- [ ] Separation of concerns
++- [ ] Coupling / cohesion
++- [ ] Dependency direction
++- [ ] Layered Architecture
++- [ ] Clean Architecture — идеи, а не шаблон папок
++- [ ] Domain / Application / Infrastructure
++- [ ] Ports & Adapters — концептуально
++- [ ] Modularity
++- [ ] Abstraction vs overengineering
++
++## Track C — Domain modelling
++
++- [ ] Domain model
++- [ ] Entity / Value Object — базово
++- [ ] Ubiquitous Language
++- [ ] Bounded Context
++- [ ] Invariants
++- [ ] State machines
++
++## Practice — завершение Project 0: Axyro
++
++- [ ] Выделить логические области / bounded contexts
++- [ ] Найти места с плохой cohesion / сильным coupling
++- [ ] Объяснить, почему `models.py` и крупные task-файлы устроены именно так
++- [ ] Подготовить design proposal: что оставить / разделить / упростить
++- [ ] **Не рефакторить автоматически только ради Clean Architecture**
++
++## CP2 — Structure checkpoint
++
++Готово, когда менти может:
++
++- объяснить структуру Axyro без помощи AI;
++- показать основные boundaries;
++- аргументированно предложить упрощение;
++- отличить необходимую abstraction от случайной сложности;
++- сначала предложить design, а потом отдавать implementation агенту.
++
++**После CP2 Axyro перестаёт быть основным учебным проектом.**
++
++---
++
++# Level 3 — Data & Async
++
++## Track A — Data
++
++- [ ] Schema design
++- [ ] Primary / Foreign keys
++- [ ] Constraints
++- [ ] Indexes
++- [ ] Transactions
++- [ ] ACID
++- [ ] Isolation levels — базово
++- [ ] Optimistic / pessimistic locking
++- [ ] Migrations
++- [ ] Source of truth
++
++## Track B — Background processing
++
++- [ ] Sync vs async work
++- [ ] Queue
++- [ ] Broker
++- [ ] Worker
++- [ ] Scheduler
++- [ ] Retry / backoff
++- [ ] Dead-letter queue
++- [ ] Idempotency
++- [ ] At-most-once / at-least-once / exactly-once — концептуально
++
++## Track C — Testing
++
++- [ ] Database integration tests
++- [ ] Queue/worker integration tests
++- [ ] API-level tests
++- [ ] Failure scenarios
++- [ ] Regression scenarios
++
++## Practice — Project 1: Structured backend service
++
++Новый проект. Не CRUD ради CRUD — должна быть настоящая бизнес-логика.
++
++Минимальные требования:
++
++- API;
++- PostgreSQL;
++- domain rules / invariants;
++- tests;
++- Docker;
++- понятная структура;
++- **без Redis/queue, если он не сможет доказать необходимость**.
++
++До реализации:
++
++1. Requirements
++2. Constraints
++3. Architecture
++4. Data model
++5. API contract
++6. Failure cases
++
++### Learning trap
++
++Если менти автоматически предлагает Redis/Celery/Kafka, он должен объяснить:
++
++> Какую конкретную проблему это решает прямо сейчас?
++
++## CP3 — Data checkpoint
++
++Готово, когда:
++
++- схема данных проектируется осознанно;
++- понятны transaction boundaries;
++- понятны indexes/constraints;
++- менти способен аргументировать необходимость или отсутствие async processing;
++- integration tests проверяют реальные сценарии системы.
++
++---
++
++# Level 4 — Async, Integrations & Distributed Systems
++
++## Track A — External integrations
++
++- [ ] OAuth 2.0
++- [ ] API keys / tokens
++- [ ] Webhooks
++- [ ] Polling
++- [ ] Rate limits
++- [ ] Timeouts
++- [ ] Retries
++- [ ] Circuit breaker
++- [ ] API versioning
++- [ ] Idempotency keys
++
++## Track B — Distributed systems thinking
++
++- [ ] Partial failures
++- [ ] Eventual consistency
++- [ ] Race conditions
++- [ ] Concurrency
++- [ ] Duplicate requests/events
++- [ ] Distributed transactions — проблема
++- [ ] Transactional outbox
++- [ ] Saga — концептуально
++- [ ] Graceful degradation
++
++## Practice — Project 2: Async processing / integration system
++
++Новый проект, где async действительно нужен.
++
++Примеры класса задач:
++
++- document/media processing pipeline;
++- bulk import + processing;
++- scheduled synchronization with external API;
++- multi-stage data enrichment.
++
++Обязательные свойства:
++
++- queue + workers;
++- retries/backoff;
++- idempotency;
++- scheduling;
++- external API;
++- observable job states;
++- recovery after failure.
++
++Во время проекта ментор добавляет constraints:
++
++- worker падает после side effect;
++- событие приходит дважды;
++- API отвечает 30 секунд;
++- rate limit;
++- часть операции выполнилась;
++- несколько workers работают конкурентно.
++
++## CP4 — Distributed checkpoint
++
++Готово, когда менти:
++
++- ожидает partial failures по умолчанию;
++- понимает delivery guarantees;
++- проектирует idempotency;
++- может описать failure modes;
++- может объяснить consistency model;
++- умеет адаптировать существующую архитектуру при изменении требований.
++
++---
++
++# Level 5 — Production Engineering
++
++## Track A — Deployment
++
++- [ ] Docker image / container
++- [ ] Volumes
++- [ ] Networking
++- [ ] Docker Compose
++- [ ] VPS vs PaaS vs Cloud
++- [ ] Reverse proxy
++- [ ] DNS
++- [ ] TLS / HTTPS
++- [ ] Environments
++- [ ] Secrets
++- [ ] Database migrations during deployment
++- [ ] Rollback
++
++## Track B — CI/CD
++
++- [ ] Build
++- [ ] Lint / static checks
++- [ ] Tests
++- [ ] Artifacts
++- [ ] Deployment
++- [ ] Rollback strategy
++
++## Track C — Observability & Reliability
++
++- [ ] Structured logs
++- [ ] Metrics
++- [ ] Traces
++- [ ] Correlation IDs
++- [ ] Dashboards
++- [ ] Alerts
++- [ ] Health / readiness
++- [ ] Backups
++- [ ] Restore
++- [ ] Graceful shutdown
++- [ ] RPO / RTO — базово
++- [ ] SLI / SLO — базово
++
++## Track D — Security foundations
++
++- [ ] Authentication vs Authorization
++- [ ] Sessions / JWT
++- [ ] RBAC
++- [ ] Secrets
++- [ ] Encryption in transit / at rest
++- [ ] Input validation
++- [ ] SQL Injection
++- [ ] XSS
++- [ ] CSRF
++- [ ] SSRF
++- [ ] Least privilege
++- [ ] Threat modelling
++- [ ] Audit logs
++- [ ] Dependency vulnerabilities
++
++## Practice — Productionize Project 1 or Project 2
++
++Не создавать новый проект ради infrastructure.
++
++Выбрать один предыдущий сервис и добавить:
++
++- CI/CD;
++- deployment;
++- observability;
++- alerting;
++- secrets;
++- backups;
++- security review;
++- load/failure testing;
++- recovery procedure.
++
++## CP5 — Production checkpoint
++
++Готово, когда менти способен:
++
++- развернуть сервис без «магии» агента;
++- объяснить production topology;
++- диагностировать сбой по telemetry;
++- выполнить rollback/recovery;
++- объяснить основные security boundaries.
++
++---
++
++# Level 6 — AI Engineering
++
++## Track A — LLM application fundamentals
++
++- [ ] LLM API
++- [ ] Tokens / context
++- [ ] Structured outputs
++- [ ] Tool / function calling
++- [ ] Streaming
++- [ ] Retry / fallback
++- [ ] Model routing
++- [ ] Cost / latency
++
++## Track B — AI systems
++
++- [ ] RAG
++- [ ] Embeddings
++- [ ] Vector search / vector databases
++- [ ] Memory
++- [ ] Human-in-the-loop
++- [ ] Guardrails
++- [ ] Agent loops
++- [ ] MCP servers
++- [ ] Multi-agent architectures
++- [ ] Deterministic vs probabilistic boundaries
++
++## Track C — Evals
++
++- [ ] Что считать quality
++- [ ] Eval dataset
++- [ ] Baseline
++- [ ] Failure taxonomy
++- [ ] Deterministic checks
++- [ ] LLM-as-judge
++- [ ] Regression
++- [ ] Model comparison
++- [ ] Cost / latency evaluation
++
++## Practice — Project 3: Production AI service
++
++Новый сервис, где AI решает реальную задачу.
++
++Условие:
++
++**не использовать RAG, agents, vector DB, memory или multi-agent только потому, что они есть в roadmap.**
++
++Для каждого компонента нужно объяснить необходимость.
++
++На выходе:
++
++- architecture;
++- deterministic boundaries;
++- AI feature;
++- eval dataset;
++- baseline;
++- metrics;
++- production deployment;
++- observability;
++- cost/latency understanding.
++
++## CP6 — AI Engineering checkpoint
++
++Готово, когда:
++
++- AI quality измеряется, а не оценивается «на глаз»;
++- менти умеет выбирать между обычным кодом и LLM;
++- понимает риски tool use / prompt injection;
++- способен аргументировать архитектуру AI-system.
++
++---
++
++# Level 7 — Independent Engineering
++
++Здесь ментор больше не задаёт архитектуру или стек.
++
++## Final Project — Own Product
++
++Менти самостоятельно выбирает продукт/проблему.
++
++Процесс:
++
++1. Idea / Problem
++2. Requirements
++3. Non-functional requirements
++4. Constraints
++5. Architecture proposal
++6. Trade-offs
++7. Data model
++8. APIs / integrations
++9. Failure model
++10. Security model
++11. Implementation plan
++12. Implementation with AI
++13. Testing
++14. Deployment
++15. Observability
++16. Production feedback
++17. Iteration
++
++## CP7 — Independent checkpoint
++
++Roadmap считается пройденным, когда менти может самостоятельно:
++
++- определить требования;
++- выбрать архитектуру;
++- выбрать технологический стек;
++- отказаться от ненужных компонентов;
++- объяснить trade-offs;
++- управлять AI-agents;
++- проверить результат;
++- довести сервис до production;
++- диагностировать и исправлять реальные проблемы.
++
++---
++
++# Project progression
++
++```text
++Project 0 — Axyro
++Diagnosis + foundations + architecture understanding
++           │
++           ▼
++Project 1 — Structured Backend
++API + Postgres + domain rules + tests
++           │
++           ▼
++Project 2 — Async / Integration System
++Queues + workers + failures + external APIs
++           │
++           ▼
++Productionization
++CI/CD + security + observability + reliability
++           │
++           ▼
++Project 3 — Production AI Service
++LLM + tools + evals + production engineering
++           │
++           ▼
++Final Project — Own Product
++Independent end-to-end engineering
++```
++
++# Mentor review loop
++
++Для каждого существенного проекта/этапа:
++
++```text
++Problem statement
++      ↓
++Research / theory
++      ↓
++Design proposal
++      ↓
++Mentor design review
++      ↓
++Implementation with AI
++      ↓
++Automated checks
++      ↓
++Technical review
++      ↓
++Changes / fixes
++      ↓
++New constraint / failure scenario
++      ↓
++Checkpoint
++```
++
++Ключевой вопрос на каждом этапе:
++
++> **Почему это решение здесь нужно и что станет хуже, если его убрать?**
+diff --git a/docs/homework-05/testing-report.md b/docs/homework-05/testing-report.md
+new file mode 100644
+index 0000000..a42ed88
+--- /dev/null
++++ b/docs/homework-05/testing-report.md
+@@ -0,0 +1,110 @@
++# KazanCourts P01–P05 — фактические проверки
++
++Дата: 13 ноября 2026, Europe/Moscow. Первоначальный независимый Review пройден с двумя открытыми вопросами (сообщение пользователя 14 ноября); повторный Review изменений CI/volume ещё не выполнен.
++База: `3bd07ae8c5357faf54e38b89fa921c42b3dbdd8b`; исходная ветка `work` оставлена без изменений.
++Worktree: `/workspace/kazan-courts-hw05`, ветка `feature/hw05-kazancourts-production`.
++Источники получены из `KazanCourts_HW005_required_sources.zip`; оригиналы лежат в `sources/`.
++
++## Изоляция и окружение
++
++Только Compose-проект `kc-hw05-review`, отдельная сеть и тома с этим префиксом, loopback-порт 18005.
++Никакие production DB/Kafka, n8n, погодные endpoint или VidHarbor не использовались.
++Уникальные локальные секреты созданы генератором; значения не включены в отчёт/Review ZIP.
++Docker 29.9.2, Compose 2.40.3, Python образа 3.14.8, Django 5.2.17,
++psycopg 3.3.6, kafka-python 3.0.12, PostgreSQL 18.6 (финальная база Alpine), Kafka 4.2.2.
++Проверены текущие repository pins; base image tags не digest-pinned, transitive pip dependencies не полностью закреплены — побитовая воспроизводимость не заявляется.
++Облачная сборка использует дополнительный Compose build-secret `cloud_ca` из системного CA bundle.
++Приложение и DB image собраны из изменённого worktree, не из старых onboarding-образов.
++
++## Воспроизведение команд
++
++В приложенном комплекте Review `logs/` — исходные stdout/stderr запусков, включая неудачные первые попытки.
++Основные команды выполнялись из корня worktree. Обозначение `DC` ниже —
++`docker compose -p kc-hw05-review -f compose.yaml -f /workspace/hw05-review/compose.cloud.json`;
++`KAZAN_HTTP_PORT=18005` задан для всех этих команд. Сам cloud override приложен в ZIP.
++Он добавляет только BuildKit secret, не меняет приложение, команды сервисов или образы.
++
++```bash
++python3 scripts/init_local_env.py
++DC config --quiet
++DC up --build -d --wait --wait-timeout 180
++DC exec -T web python manage.py seed_demo_data
++COMPOSE_FILE=compose.yaml:/workspace/hw05-review/compose.cloud.json KAZAN_HTTP_PORT=18005 \
++  python3 scripts/check_production.py --project kc-hw05-review --port 18005
++DC exec -T web python manage.py seed_demo_data
++DC stop scheduler publisher consumer
++set -a; source .env; set +a
++DC exec -T -e DB_NAME=postgres -e DB_USER=kazan_test \
++  -e DB_PASSWORD="$TEST_DB_PASSWORD" -e KAFKA_INTEGRATION=1 \
++  web python manage.py test test_database bookings config.test_health --verbosity 2 --noinput
++node --test bookings/tests/operator_queue_ui.test.js
++```
++
++Переменная DC — условное обозначение команды, не shell alias из поставки.
++Для обычной локальной сборки cloud override не нужен; см. [operations](operations.md).
++Workers остановлены перед Kafka-тестами: они используют выделенный broker/topic, poison-record не должен попадать фоновому consumer. Только тестовая роль CREATEDB, не development/admin.
++После завершения тестов стенд останавливается с сохранением только тестовых томов.
++
++## Результаты
++
++| Проверка | Фактический результат | Журнал |
++|---|---|---|
++| Fresh Compose, migration gating, все сервисы | PASS после исправления прав init-скрипта | 28-final-alpine-clean-start |
++| Реальные отказы DB/Kafka и recovery | PASS: ready200 →503 →200, live всегда200 | 32-alpine-final-smoke |
++| Полный restart с сохранением volumes | PASS: down без удаления volumes, up, ready200 | 32-alpine-final-smoke |
++| Сохранение demo data | PASS: до restart 7 кортов/3 клиента созданы, после — 0/0 новых | 31-alpine-seed-before, 33-alpine-seed-after |
++| Unit health matrix, safe methods, no-cache, sanitized errors, close client | PASS, 6 тестов на host Python3.12; затем повтор в образе с общим набором | 10-health-unit-fixed |
++| Полный Django + реальная Kafka | PASS на финальной Alpine-базе: 221 тест за 53.659s, без пропусков; оба real Kafka test — ok | 35-alpine-django-all |
++| JS регрессии operator queue | PASS, 4 теста | 06-js-tests |
++| check/migrate/makemigrations, environment overrides | PASS; DEBUG=0/hosts runtime override; test DB удалена, тестовая роль не имеет CONNECT к dev; login HTTP200 | 38-alpine-final-checks |
++| Секреты: текущие файлы, diff, logs, config/history/all image layers | PASS: целевой поиск четырёх значений и token/key signatures, все сохранённые слои двух образов | 39-final-secret-audit |
++| Изменения исходной ветки | PASS: work/исходный HEAD, git status пустой | 22-final-state |
++| P06–P13, deployment, внешний доступ, backup/restore | Not Run — вне scope | operations, backup-restore |
++
++## Неудачные попытки и исправления
++
++- `01-clean-start`: FAIL — bind-mounted PostgreSQL init script mode0600 не читается пользователем postgres. Исправление: отдельный DB Dockerfile с COPY --chmod=0755. Удалены только созданные этой попыткой тестовые volumes (`02`), чистый старт повторён (`03`).
++- `04-health-failures`: отказ/восстановление DB и Kafka прошли; FAIL на кратковременном закрытии HTTP-соединения во время полного restart. Smoke harness теперь повторяет HTTPException и воспроизводит down/up с сохранением volumes. Финальный harness проверен целиком (`14`, затем `32` на Alpine).
++- `05-seed`: FAIL из-за одновременной проверки остановленной тестовой DB. Исправлен порядок: итоговые seed выполнены до/после завершённого smoke (`13`, `15`). Ошибка не означает дефект seed.
++- `09-health-unit`: FAIL — тест импортировал отсутствующий в kafka-python3.0.12 класс NoBrokersAvailable. Тест использует фактический KafkaError, исправленный набор PASS (`10`).
++- `19-checks`: прямой `python -c` для environment не задавал DJANGO_SETTINGS_MODULE; FAIL команды проверки. Финальная команда явно задаёт settings module. Значения секретов в диагностике не выводились.
++
++- `23-final-secret-audit`: FAIL на первоначальном Debian DB image. Диагностика слоёв (`25`) выявила стандартный ssl-cert-snakeoil.key, PEM-материал в libgnutls и похожую на AWS ID строку в libunistring. Значения не выводились. Выбрана официальная база postgres:18.6-alpine; только собственные тестовые тома пересозданы, финальные старт/отказы/regression повторены. Это изменение не является инструкцией in-place migration существующей Debian PostgreSQL.
++
++- `29-alpine-secret-audit`: false positive AWS-like substring в бинарной Unicode-таблице libunistring; диагностика `30/36` установила отсутствие границ самостоятельного токена. Поиск AWS ID уточнён границами `[A-Za-z0-9]`; полный поиск четырёх сгенерированных значений и PEM private key headers сохранён. Финальная проверка слоёв — `37/39`.
++
++## Границы доказательств
++
++Health/ready не проверяют lag, schema drift, зависшую SQL-сессию, worker progress, уведомления пользователя, внешнюю погоду или доступ по HTTPS.
++Реальные Kafka-тесты проверяют существующий outbox/consumer и повторную доставку внутри изолированного брокера; все booking regression assertions сохранены.
++Проверка секретов ищет четыре сгенерированных значения и распространённые сигнатуры credentials. Это не доказательство отсутствия всех возможных секретов во всей истории Git/внешних хранилищах.
++Существующий CI bootstrap password — синтетический пароль временной CI-БД, не production credential; workflow на GitHub не запускался.
++Локальный runserver сохранён. Полный production deployment, security audit и итоговый CP5 этим этапом не закрыты.
++Commit/push/PR/merge/deployment не выполнялись. Итог передаётся для независимого Review.
++
++
++## Повторный Review 14 ноября: CI и PostgreSQL
++
++Подробный [отчёт изменений и границ](ci-review.md), [риск старых volumes](postgresql-volume-review.md).
++Предыдущие строки PASS относятся к исполнению в Codex, а не GitHub Actions.
++
++| Проверка новой версии | Codex | GitHub Actions |
++|---|---|---|
++| Workflow actionlint 1.7.7, Python syntax, раздельный volume | PASS | Not Run |
++| Негативные тесты CI evidence/safety gates | PASS, 12 тестов | Not Run |
++| Полный cold Compose CI orchestration | PASS: prepare=0/run=0/finalize=0, свежий kc-hw05-ci-codex-20261114-b | Not Run |
++| Реальные health/readiness failures/recovery | PASS: live200, ready200→503→200 для DB и Kafka, сохранённые данные после down/up | Not Run |
++| Django JSON discovery/execution и реальные Kafka tests | PASS: discovered=221, tests_run=221, failures/errors/skipped/expected_failures/unexpected_successes=0 | Not Run |
++| JS TAP counts, отсутствие skips | PASS: tests=4/pass=4, fail/cancelled/skipped/todo=0 | Not Run |
++| Temporary secrets audit всех образов, безопасные артефакты | PASS в явно указанном scope; generic signatures собственных образов, temporary values всех образов | Not Run |
++| Cleanup новых ресурсов и секретного файла | PASS: containers/networks/volumes/local images отсутствуют; runtime.env/raw удалены | Not Run |
++| Перенос существующего Debian-volume на Alpine | Not Run; не разрешён | Not Run |
++
++Первый Codex CI run: prepare=0, run=0, finalize=1, общий FAIL. Причина — PEM-материал upstream libgnutls официального Kafka. Подробные raw-логи были удержаны и удалены; остался безопасный summary. Для unchanged upstream Kafka явно выделен scope временных генерируемых значений, остальные generic проверки сохранены. Дополнительный негативный тест подтверждает отказ при реальной утечке временного значения в этом режиме. Полный повторный run выполняется на новом project; результат не подменяется успешным первым тестовым этапом.
++
++В настоящей задаче commit/push/PR/merge/deployment/dispatch не выполнялись. Прежний архив Review был ранее загружен в отдельную отчётную ветку по предыдущему поручению; он не содержит новую версию CI.
++
++
++Финальный Codex CI run (`cloud-run-b.log`): **PASS**. Машинные результаты и аудированные stdout/stderr находятся в `ci-results/`, включая `django-results.json`, `js-tests.log`, `health-failure-recovery.log`, `secret-audit.log`, `cleanup.log` и `summary.txt`.
++Первый FAIL run оставлен отдельно (`first-run-summary.txt`); не смешан с успешным повтором. `unit.log` содержит ожидаемые строки FAIL внутри негативных сценариев, но unittest-итог **12 tests, OK**.
++`actionlint` официальный checksum проверен; workflow lint — PASS. Сводка не утверждает успешный GitHub Actions run: для GitHub всё ещё Not Run.
+diff --git a/scripts/audit_local_secrets.py b/scripts/audit_local_secrets.py
+new file mode 100644
+index 0000000..d575af0
+--- /dev/null
++++ b/scripts/audit_local_secrets.py
+@@ -0,0 +1,72 @@
++"""Targeted leak audit of generated local credentials. Never prints their values.
++
++This is not a full historical or third-party credential audit.
++"""
++import argparse
++import re
++from pathlib import Path
++import subprocess
++import tarfile
++import tempfile
++
++parser = argparse.ArgumentParser()
++parser.add_argument('--temporary-secrets-only-image', action='append', default=[],
++                    help='For an unmodified upstream image, scan all generated secrets; do not claim a generic fixture/key audit')
++parser.add_argument('--env-file', type=Path)
++parser.add_argument('--logs', type=Path, required=True)
++parser.add_argument('--image', action='append', required=True)
++args = parser.parse_args()
++root = Path(__file__).resolve().parent.parent
++names = {'POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY'}
++values = [line.split('=', 1)[1].encode() for line in (args.env_file or root / '.env').read_text().splitlines()
++          if line.partition('=')[0] in names]
++assert len(values) == 4 and all(len(value) >= 32 for value in values)
++
++
++# Token boundaries avoid substrings inside libunistring Unicode name tables.
++patterns = [rb'gh[pousr]_[A-Za-z0-9]{30,}', rb'(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}(?![A-Za-z0-9])',
++            rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----']
++
++
++def clean(data, location, signatures=True):
++    if signatures and any(re.search(pattern, data) for pattern in patterns):
++        raise SystemExit(f'FAIL credential signature detected in {location}; value withheld')
++    if any(value in data for value in values):
++        raise SystemExit(f'FAIL local credential detected in {location}; value withheld')
++
++
++paths = subprocess.check_output(['git', 'ls-files', '-co', '--exclude-standard', '-z'], cwd=root).split(b'\0')
++for item in paths:
++    if item:
++        path = root / item.decode()
++        if path.is_file():
++            clean(path.read_bytes(), str(path.relative_to(root)))
++print('PASS current tracked/untracked nonignored repository files')
++clean(subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=root), 'diff')
++for path in args.logs.glob('*.log'):
++    clean(path.read_bytes(), f'log {path.name}')
++print('PASS diff and captured logs')
++seen = set()
++for image in args.image:
++    identity = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image]).strip()
++    if identity in seen:
++        continue
++    seen.add(identity)
++    signatures = image not in args.temporary_secrets_only_image
++    clean(subprocess.check_output(['docker', 'image', 'inspect', image]), 'image config', signatures)
++    clean(subprocess.check_output(['docker', 'history', '--no-trunc', image]), 'image history', signatures)
++    with tempfile.TemporaryFile() as archive:
++        subprocess.run(['docker', 'save', image], stdout=archive, check=True)
++        archive.seek(0)
++        with tarfile.open(fileobj=archive, mode='r|*') as saved:
++            for member in saved:
++                if not member.isfile():
++                    continue
++                source = saved.extractfile(member)
++                tail = b''
++                while block := source.read(1024 * 1024):
++                    clean(tail + block, 'saved image layer/config', signatures)
++                    tail = block[-max(map(len, values)):]
++    scope = 'generated temporary credentials only' if not signatures else 'generated credentials and common signatures'
++    print(f'PASS image config, history and all saved layers: {image}; scope={scope}')
++print('Scope: four generated local credentials; .env excluded intentionally; historical secrets not certified.')
+diff --git a/scripts/check_production.py b/scripts/check_production.py
+new file mode 100644
+index 0000000..c88565d
+--- /dev/null
++++ b/scripts/check_production.py
+@@ -0,0 +1,68 @@
++"""Destructive dependency smoke test, only for an explicitly isolated Compose project.
++
++Run after `up --wait`; never point this at an existing development/production stack.
++COMPOSE_FILE and other Compose environment overrides are honored.
++"""
++from http.client import HTTPException
++import argparse
++import json
++import subprocess
++import time
++from urllib.error import HTTPError, URLError
++from urllib.request import urlopen
++
++parser = argparse.ArgumentParser()
++parser.add_argument('--env-file')
++parser.add_argument('--project', required=True)
++parser.add_argument('--port', required=True, type=int)
++args = parser.parse_args()
++if not args.project.startswith('kc-hw05-'):
++    parser.error('project must start with kc-hw05-; use fresh dedicated volumes')
++if not 1024 <= args.port <= 65535:
++    parser.error('choose an unprivileged local port')
++compose = ['docker', 'compose', '-p', args.project]
++if args.env_file:
++    compose += ['--env-file', args.env_file]
++base = f'http://127.0.0.1:{args.port}'
++actual = subprocess.check_output([*compose, 'port', 'web', '8000'], text=True).strip()
++if actual != f'127.0.0.1:{args.port}':
++    parser.error('requested port does not belong to this Compose project')
++
++
++
++def check(pg=True, kafka=True):
++    deadline = time.monotonic() + 45
++    while True:
++        try:
++            with urlopen(base + '/health/live', timeout=8) as response:
++                assert response.status == 200
++                assert json.load(response) == {'status': 'live'}
++            try:
++                response = urlopen(base + '/health/ready', timeout=8)
++            except HTTPError as error:
++                response = error
++            with response:
++                result = json.load(response)
++                assert response.status == (200 if pg and kafka else 503), result
++                assert result == {'status': 'ready' if pg and kafka else 'not_ready',
++                                  'checks': {'postgres': pg, 'kafka': kafka}}, result
++            print(f'PASS live=200 ready={200 if pg and kafka else 503} postgres={pg} kafka={kafka}', flush=True)
++            return
++        except (AssertionError, URLError, TimeoutError, HTTPException) as error:
++            if time.monotonic() >= deadline:
++                raise AssertionError(f'Health matrix did not converge: {error}') from error
++            time.sleep(1)
++
++
++check()
++for service, expected in [('db', {'pg': False}), ('kafka', {'kafka': False})]:
++    subprocess.run([*compose, 'stop', '--timeout', '10', service], check=True)
++    try:
++        check(**expected)
++    finally:
++        subprocess.run([*compose, 'start', service], check=True)
++    check()
++subprocess.run([*compose, 'down', '--timeout', '10'], check=True)
++subprocess.run([*compose, 'up', '-d', '--wait', '--wait-timeout', '180'], check=True)
++check()
++print('PASS dependency failures, recoveries and full restart', flush=True)
+diff --git a/scripts/ci_production.py b/scripts/ci_production.py
+new file mode 100644
+index 0000000..96de6d1
+--- /dev/null
++++ b/scripts/ci_production.py
+@@ -0,0 +1,232 @@
++"""Isolated P01-P05 CI orchestration. Raw logs never reach the Actions console.
++
++prepare/run/finalize are separate so finalize can run under Actions always().
++Only this run's new project and private state are eligible for cleanup.
++"""
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import shutil
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parent.parent
++SECRET_NAMES = {'POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY'}
++KAFKA_TESTS = {
++    'bookings.tests.test_kafka_pipeline.KafkaIntegrationTests.test_invalid_record_is_redelivered_and_blocks_later_message',
++    'bookings.tests.test_kafka_pipeline.KafkaIntegrationTests.test_forecast_outbox_real_broker_consumer_and_redelivery',
++}
++
++
++def validate_django(data):
++    names = data['discovered_ids']
++    if data['tests_run'] < 221 or data['tests_run'] != len(names) or len(set(names)) != len(names):
++        raise ValueError('Django executed count does not match discovery or is below 221')
++    if not KAFKA_TESTS <= set(names):
++        raise ValueError('required real Kafka integration tests are missing')
++    for field in ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes'):
++        if data[field] != 0:
++            raise ValueError('Django suite contains non-passing outcomes')
++
++
++def validate_js(text):
++    counts = {key: int(value) for key, value in re.findall(
++        r'^# (tests|pass|fail|cancelled|skipped|todo) (\d+)\s*$', text, re.M)}
++    if counts.get('tests', 0) < 4 or counts.get('pass') != counts.get('tests'):
++        raise ValueError('JavaScript test run missing or incomplete')
++    if any(counts.get(key, -1) != 0 for key in ('fail', 'cancelled', 'skipped', 'todo')):
++        raise ValueError('JavaScript suite contains non-passing outcomes')
++
++
++def redact(data, values):
++    for value in values:
++        data = data.replace(value, b'[REDACTED]')
++    return data
++
++
++class CI:
++    def __init__(self, state, artifacts):
++        self.state = state.resolve()
++        self.artifacts = artifacts.resolve()
++        self.env_file = self.state / 'runtime.env'
++        self.raw = self.state / 'raw'
++        self.project = os.environ['COMPOSE_PROJECT_NAME']
++        if not re.fullmatch(r'kc-hw05-ci-[a-z0-9-]+', self.project):
++            raise ValueError('use a new kc-hw05-ci-* project')
++        self.env = os.environ.copy()
++        # All runtime settings come from the generated CI file, not host bindings.
++        for name in SECRET_NAMES | {'KAFKA_BOOTSTRAP_SERVERS', 'WEATHER_NETWORK_ENABLED',
++                                    'DJANGO_DEBUG', 'DJANGO_ALLOWED_HOSTS', 'KAZAN_HTTP_PORT'}:
++            self.env.pop(name, None)
++        self.env.update(KAZAN_HTTP_PORT='18005', WEATHER_NETWORK_ENABLED='0',
++                        KAFKA_BOOTSTRAP_SERVERS='kafka:9092')
++        self.dc = ['docker', 'compose', '-p', self.project, '--env-file', str(self.env_file)]
++
++    def record(self, name, status):
++        self.artifacts.mkdir(parents=True, exist_ok=True)
++        with (self.artifacts / 'summary.txt').open('a') as output:
++            output.write(f'{status} {name}\n')
++        print(f'{status} {name}', flush=True)
++
++    def command(self, name, argv, env=None, timeout=240):
++        self.raw.mkdir(parents=True, exist_ok=True, mode=0o700)
++        with (self.raw / (name + '.log')).open('wb') as output:
++            result = subprocess.run(argv, cwd=ROOT, env=env or self.env, stdout=output,
++                                    stderr=subprocess.STDOUT, timeout=timeout)
++        if result.returncode:
++            self.record(name, 'FAIL')
++            raise RuntimeError('command failed; see audited artifact logs')
++        self.record(name, 'PASS')
++
++    def prepare(self):
++        if self.state.exists() or self.artifacts.exists():
++            raise ValueError('CI state/artifacts must be new directories')
++        # Refuse existing project resources BEFORE issuing any mutating command.
++        for kind in ('container', 'volume', 'network'):
++            result = subprocess.check_output(['docker', kind, 'ls', '-q', '--filter',
++                f'label=com.docker.compose.project={self.project}'], env=self.env)
++            if result.strip():
++                raise ValueError('project already owns Docker resources; refusing reuse')
++        existing_images = subprocess.check_output(['docker', 'image', 'ls', '-q', '--filter',
++            f'reference={self.project}-*'], env=self.env)
++        if existing_images.strip():
++            raise ValueError('project already has images; refusing reuse')
++        self.state.mkdir(parents=True, mode=0o700)
++        self.raw.mkdir(mode=0o700)
++        (self.state / 'owner.json').write_text(json.dumps({'project': self.project}))
++        self.command('generate-env', [sys.executable, 'scripts/init_local_env.py', '--output', str(self.env_file)])
++        self.command('compose-config', self.dc + ['config', '--quiet'])
++
++    def run(self):
++        self.command('build', self.dc + ['build', '--pull', '--no-cache'], timeout=900)
++        self.command('start', self.dc + ['up', '-d', '--wait', '--wait-timeout', '180'], timeout=300)
++        self.command('services', self.dc + ['ps', '--all', '--format', 'json'])
++        items = (self.raw / 'services.log').read_text()
++        try:
++            states = json.loads(items)
++        except json.JSONDecodeError:
++            states = [json.loads(line) for line in items.splitlines() if line.strip()]
++        by_name = {row['Service']: row for row in states}
++        if any(by_name.get(name, {}).get('State') != 'running' for name in
++               ('web', 'db', 'kafka', 'scheduler', 'publisher', 'consumer')):
++            raise ValueError('required Compose service is missing/stopped')
++        if by_name.get('migrate', {}).get('ExitCode') != 0:
++            raise ValueError('migration job did not complete successfully')
++        self.record('all-services-and-migrations', 'PASS')
++        self.command('django-check', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'check'])
++        self.command('migrations', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'migrate', '--check'])
++        self.command('model-drift', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'makemigrations', '--check', '--dry-run'])
++        self.command('seed-before', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'seed_demo_data'])
++        self.command('health-failure-recovery', [sys.executable, 'scripts/check_production.py',
++            '--project', self.project, '--port', '18005', '--env-file', str(self.env_file)], timeout=480)
++        self.command('seed-after', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'seed_demo_data'])
++        if '0 courts and 0 customers created' not in (self.raw / 'seed-after.log').read_text():
++            raise ValueError('demo data did not survive retained-volume restart')
++        self.command('pause-workers', self.dc + ['stop', 'scheduler', 'publisher', 'consumer'])
++        bindings = dict(line.split('=', 1) for line in self.env_file.read_text().splitlines()
++                        if '=' in line and not line.startswith('#'))
++        env = self.env.copy()
++        env['DB_PASSWORD'] = bindings['TEST_DB_PASSWORD']
++        self.command('django-tests', self.dc + ['exec', '-T', '-e', 'DB_NAME=postgres', '-e', 'DB_USER=kazan_test',
++            '-e', 'DB_PASSWORD', '-e', 'KAFKA_INTEGRATION=1', '-e', 'KAZAN_TEST_RESULTS=/tmp/ci-tests.json',
++            'web', 'python', 'manage.py', 'test', 'test_database', 'bookings', 'config.test_health',
++            '--testrunner=config.ci_runner.CIResultRunner', '--verbosity', '2', '--noinput'], env=env)
++        self.command('collect-django-results', self.dc + ['cp', 'web:/tmp/ci-tests.json', str(self.raw / 'django-results.json')])
++        validate_django(json.loads((self.raw / 'django-results.json').read_text()))
++        self.record('django-counts-no-skips-and-real-kafka', 'PASS')
++        self.command('js-tests', ['node', '--test', '--test-reporter=tap', 'bookings/tests/operator_queue_ui.test.js'])
++        validate_js((self.raw / 'js-tests.log').read_text())
++        self.record('javascript-counts-no-skips', 'PASS')
++        self.command('post-tests-db', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'shell', '-c',
++            "from django.db import connection; c=connection.cursor(); c.execute(\"SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname='test_kazan_courts'), has_database_privilege('kazan_test','kazan_courts_dev','CONNECT')\"); assert c.fetchone()==(False,False); print('PASS isolated test DB removed and dev connection denied')"])
++        self.record('test-phase', 'PASS')
++
++    def finalize(self):
++        owner = self.state / 'owner.json'
++        if not owner.exists() or json.loads(owner.read_text())['project'] != self.project:
++            self.record('cleanup-not-authorized-no-owner', 'FAIL')
++            return 1
++        failed = False
++        try:
++            self.command('service-logs', self.dc + ['logs', '--no-color', '--tail', '300'])
++            image_text = subprocess.check_output(self.dc + ['images', '-q'], cwd=ROOT, env=self.env, text=True)
++            images = sorted(set(image_text.split()))
++            if not images:
++                raise ValueError('no images available for leak audit')
++            argv = [sys.executable, 'scripts/audit_local_secrets.py', '--env-file', str(self.env_file), '--logs', str(self.raw)]
++            for image in images:
++                argv += ['--image', image]
++            # Kafka is an unchanged upstream image. Its GnuTLS library contains
++            # built-in PEM material. Scan every layer for our generated values;
++            # generic signatures remain mandatory for code/logs/our own images.
++            kafka_images = subprocess.check_output(self.dc + ['images', '-q', 'kafka'],
++                cwd=ROOT, env=self.env, text=True).split()
++            for image in kafka_images:
++                argv += ['--temporary-secrets-only-image', image]
++            self.command('secret-audit', argv, timeout=600)
++        except Exception:
++            failed = True
++            self.record('secret-audit-or-collection', 'FAIL')
++        try:
++            self.command('cleanup', self.dc + ['down', '--volumes', '--remove-orphans', '--rmi', 'local'], timeout=180)
++            for kind in ('container', 'volume', 'network'):
++                remaining = subprocess.check_output(['docker', kind, 'ls', '-q', '--filter',
++                    f'label=com.docker.compose.project={self.project}'], env=self.env)
++                if remaining.strip():
++                    raise ValueError('temporary project resource remains')
++            if subprocess.check_output(['docker', 'image', 'ls', '-q', '--filter',
++                    f'reference={self.project}-*'], env=self.env).strip():
++                raise ValueError('temporary project image remains')
++            self.record('cleanup-resources-verified', 'PASS')
++        except Exception:
++            failed = True
++            self.record('cleanup-resources-verified', 'FAIL')
++        # Only sanitized logs enter the upload directory; leak findings remain FAIL.
++        values = [line.split('=', 1)[1].encode() for line in self.env_file.read_text().splitlines()
++                  if line.partition('=')[0] in SECRET_NAMES] if self.env_file.exists() else []
++        if len(values) != 4:
++            failed = True
++        else:
++            for path in self.raw.iterdir():
++                if path.is_file():
++                    raw = path.read_bytes()
++                    if any(value in raw for value in values):
++                        failed = True
++                        self.record('raw-result-secret-leak', 'FAIL')
++                    safe = redact(raw, values)
++                    # On signature/audit failure withhold all raw output, including
++                    # unknown credential formats; retain only fixed status lines.
++                    if not failed:
++                        (self.artifacts / path.name).write_bytes(safe)
++        if failed:
++            for path in self.artifacts.iterdir():
++                if path.name != 'summary.txt':
++                    path.unlink()
++            self.record('finalization', 'FAIL')
++        else:
++            self.record('finalization', 'PASS')
++        self.env_file.unlink(missing_ok=True)
++        shutil.rmtree(self.raw, ignore_errors=True)
++        return int(failed)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('phase', choices=['prepare', 'run', 'finalize'])
++    parser.add_argument('--state-dir', type=Path, required=True)
++    parser.add_argument('--artifacts', type=Path, required=True)
++    args = parser.parse_args()
++    try:
++        ci = CI(args.state_dir, args.artifacts)
++        result = getattr(ci, args.phase)()
++        return result or 0
++    except Exception as error:
++        # Exception text/command args could include secrets: print type only.
++        print(f'FAIL {args.phase} ({type(error).__name__}); raw output withheld', flush=True)
++        return 1
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+diff --git a/scripts/init_local_env.py b/scripts/init_local_env.py
+new file mode 100644
+index 0000000..de5ed2e
+--- /dev/null
++++ b/scripts/init_local_env.py
+@@ -0,0 +1,19 @@
++"""Create private, unique credentials for a NEW local Compose database."""
++import argparse
++import os
++from pathlib import Path
++import secrets
++
++parser = argparse.ArgumentParser()
++parser.add_argument('--output', type=Path)
++args = parser.parse_args()
++
++root = Path(__file__).resolve().parent.parent
++text = (root / '.env.example').read_text(encoding='utf-8')
++for name in ('POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY'):
++    text = text.replace(f'{name}=GENERATE_LOCALLY', f'{name}={secrets.token_urlsafe(48)}')
++# O_EXCL prevents replacing credentials for an existing volume.
++fd = os.open(args.output or root / '.env', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++with os.fdopen(fd, 'w', encoding='utf-8') as output:
++    output.write(text)
++print('Created private .env for local development; values are not printed.')
+diff --git a/scripts/test_ci_production.py b/scripts/test_ci_production.py
+new file mode 100644
+index 0000000..4ac69a3
+--- /dev/null
++++ b/scripts/test_ci_production.py
+@@ -0,0 +1,123 @@
++"""Verify that CI evidence gates reject misleading successful process exits."""
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from ci_production import CI, KAFKA_TESTS, redact, validate_django, validate_js
++
++
++class EvidenceTests(unittest.TestCase):
++    def good(self):
++        return dict(discovered_ids=sorted(KAFKA_TESTS) + [f'test.case_{i}' for i in range(219)],
++                    tests_run=221, failures=0, errors=0, skipped=0, expected_failures=0,
++                    unexpected_successes=0)
++
++    def test_complete_suite_passes(self):
++        validate_django(self.good())
++
++    def test_zero_test_and_incomplete_suites_fail(self):
++        for count in (0, 220, 222):
++            data = self.good()
++            data['tests_run'] = count
++            with self.subTest(count=count), self.assertRaises(ValueError):
++                validate_django(data)
++
++    def test_nonpassing_outcomes_fail_even_with_exit_zero(self):
++        for field in ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes'):
++            data = self.good()
++            data[field] = 1
++            with self.subTest(field=field), self.assertRaises(ValueError):
++                validate_django(data)
++
++    def test_missing_real_kafka_and_duplicate_discovery_fail(self):
++        for replacement in ('different.test', 'test.case_0'):
++            data = self.good()
++            data['discovered_ids'][0] = replacement
++            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
++                validate_django(data)
++
++    def test_new_tests_are_counted_automatically(self):
++        data = self.good()
++        data['discovered_ids'].append('new.actual.test')
++        data['tests_run'] += 1
++        validate_django(data)
++
++    def test_js_requires_all_four_actual_successes(self):
++        good = '# tests 4\n# pass 4\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n'
++        validate_js(good)
++        for text in ('', good.replace('tests 4', 'tests 0'), good.replace('pass 4', 'pass 3'),
++                     good.replace('skipped 0', 'skipped 1'), good.replace('# todo 0\n', '')):
++            with self.subTest(text=text), self.assertRaises(ValueError):
++                validate_js(text)
++
++    def test_redaction_removes_all_occurrences(self):
++        value = b'synthetic-only-not-a-credential'
++        self.assertNotIn(value, redact(value + b' ' + value, [value]))
++
++    def test_host_external_bindings_cannot_enable_weather_or_remote_broker(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ',
++                COMPOSE_PROJECT_NAME='kc-hw05-ci-safety', WEATHER_NETWORK_ENABLED='1',
++                KAFKA_BOOTSTRAP_SERVERS='external.invalid:9092'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            self.assertEqual(ci.env['WEATHER_NETWORK_ENABLED'], '0')
++            self.assertEqual(ci.env['KAFKA_BOOTSTRAP_SERVERS'], 'kafka:9092')
++
++    def test_refuse_existing_project_resources_before_creating_state(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-collision'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            with patch('ci_production.subprocess.check_output', return_value=b'existing-volume\n'):
++                with self.assertRaises(ValueError):
++                    ci.prepare()
++            self.assertFalse(ci.state.exists())
++
++    def test_no_owner_never_runs_docker_cleanup(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-test'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            with patch('ci_production.subprocess.run') as command:
++                self.assertEqual(ci.finalize(), 1)
++                command.assert_not_called()
++
++    def test_upstream_image_scope_still_rejects_temporary_secret(self):
++        import contextlib
++        import io
++        import runpy
++        with tempfile.TemporaryDirectory() as tmp:
++            env = Path(tmp) / 'runtime.env'
++            names = ('POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY')
++            value = b'synthetic-only-generated-temporary-value'
++            env.write_text('\n'.join(f'{name}={value.decode()}' for name in names))
++            def output(argv, **kwargs):
++                if argv[:2] == ['git', 'ls-files'] or argv[:2] == ['git', 'diff']:
++                    return b''
++                return b'fake-id' if '--format' in argv else value
++            with patch('sys.argv', ['audit', '--env-file', str(env), '--logs', tmp,
++                    '--image', 'upstream', '--temporary-secrets-only-image', 'upstream']), \
++                    patch('subprocess.check_output', side_effect=output), contextlib.redirect_stdout(io.StringIO()):
++                with self.assertRaises(SystemExit) as result:
++                    runpy.run_path(str(Path(__file__).with_name('audit_local_secrets.py')), run_name='__main__')
++                self.assertNotIn(value.decode(), str(result.exception))
++                self.assertIn('local credential', str(result.exception))
++
++    def test_a_leak_fails_finalize_and_withholds_logs(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-leak'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            ci.state.mkdir(); ci.raw.mkdir()
++            import json
++            (ci.state / 'owner.json').write_text(json.dumps({'project': ci.project}))
++            ci.env_file.write_text('\n'.join(f'{name}={name}-synthetic-private-value' for name in
++                ('POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY')))
++            leaked = b'POSTGRES_PASSWORD-synthetic-private-value'
++            (ci.raw / 'leak.log').write_bytes(leaked)
++            def read(argv, **kwargs):
++                return 'fake-image\n' if 'images' in argv else b''
++            with patch.object(ci, 'command'), patch('ci_production.subprocess.check_output', side_effect=read):
++                self.assertEqual(ci.finalize(), 1)
++            self.assertFalse(ci.env_file.exists())
++            self.assertFalse(ci.raw.exists())
++            self.assertEqual([p.name for p in ci.artifacts.iterdir()], ['summary.txt'])
++            self.assertNotIn(leaked, (ci.artifacts / 'summary.txt').read_bytes())
++
++
++if __name__ == '__main__':
++    unittest.main()

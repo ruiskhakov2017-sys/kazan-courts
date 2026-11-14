@@ -1,0 +1,4 @@
+bounded token n/a
+signature category 2 file usr/lib/libgnutls.so.30.42.0 size 2060368 complete PEM structure True
+bounded token False
+signature category 1 file usr/lib/libunistring.so.5.2.1 size 1922880 complete PEM structure False

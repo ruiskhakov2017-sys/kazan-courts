@@ -1,0 +1,6 @@
+PASS pre-existing business/health/settings/Dockerfile changes preserved
+PASS branch, HEAD and original checkout preserved; no new commit
+PASS temporary env/raw removed
+PASS no resources or local images remain for kc-hw05-ci-codex-20261114-a
+PASS no resources or local images remain for kc-hw05-ci-codex-20261114-b
+PASS no push/PR/merge/deployment/workflow_dispatch performed

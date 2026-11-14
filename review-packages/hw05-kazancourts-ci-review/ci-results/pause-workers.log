@@ -1,0 +1,6 @@
+ Container kc-hw05-ci-codex-20261114-b-scheduler-1  Stopping
+ Container kc-hw05-ci-codex-20261114-b-publisher-1  Stopping
+ Container kc-hw05-ci-codex-20261114-b-consumer-1  Stopping
+ Container kc-hw05-ci-codex-20261114-b-consumer-1  Stopped
+ Container kc-hw05-ci-codex-20261114-b-scheduler-1  Stopped
+ Container kc-hw05-ci-codex-20261114-b-publisher-1  Stopped

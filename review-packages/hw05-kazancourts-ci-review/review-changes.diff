@@ -1,0 +1,934 @@
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,7 +4,8 @@
+   pull_request:
+     branches: [main]
+   push:
+-    branches: [main]
++    branches: [main, feature/hw05-kazancourts-production]
++  workflow_dispatch:
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+@@ -16,189 +17,88 @@
+ jobs:
+   django-check:
+     name: django-check
++    # GitHub-hosted only: no self-hosted, workstation or external service.
+     runs-on: ubuntu-24.04
+-    timeout-minutes: 15
+-
+-    services:
+-      postgres:
+-        image: postgres:18.6
+-        env:
+-          POSTGRES_USER: postgres
+-          POSTGRES_DB: postgres
+-          # Used only by this temporary CI service.
+-          POSTGRES_PASSWORD: ci-bootstrap-only
+-        ports:
+-          - "127.0.0.1:5432:5432"
+-        options: >-
+-          --health-cmd "pg_isready -U postgres -d postgres"
+-          --health-interval 5s
+-          --health-timeout 5s
+-          --health-retries 10
+-
+-      kafka:
+-        image: apache/kafka:4.2.2
+-        env:
+-          KAFKA_NODE_ID: 1
+-          KAFKA_PROCESS_ROLES: broker,controller
+-          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+-          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+-          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@127.0.0.1:9093
+-          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+-          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+-          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+-          KAFKA_NUM_PARTITIONS: 1
+-          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+-        ports:
+-          - "127.0.0.1:9092:9092"
+-        options: >-
+-          --health-cmd "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+-          --health-interval 10s
+-          --health-timeout 30s
+-          --health-retries 18
+-          --health-start-period 30s
+-
++    timeout-minutes: 40
+     env:
+-      DB_HOST: "127.0.0.1"
+-      DB_PORT: "5432"
+-      DB_NAME: postgres
+-      DB_USER: kazan_test
+-      KAFKA_BOOTSTRAP_SERVERS: "127.0.0.1:9092"
+-      KAFKA_INTEGRATION: "1"
++      COMPOSE_PROJECT_NAME: kc-hw05-ci-${{ github.run_id }}-${{ github.run_attempt }}
+       WEATHER_NETWORK_ENABLED: "0"
+-
+     steps:
+       - name: Checkout
+         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+         with:
+           persist-credentials: false
+ 
+-      - name: Set up Python
+-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+-        with:
+-          python-version: "3.14.8"
+-          cache: pip
+-          cache-dependency-path: requirements.txt
+-
+       - name: Set up Node.js
+         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+         with:
+           node-version: "24.13.0"
+ 
+-      - name: Test operator interface
+-        run: node --test bookings/tests/operator_queue_ui.test.js
+-
+-      - name: Install dependencies
++      - name: Verify CI result gates
+         run: |
+-          python -m pip install -r requirements.txt
+-          python -m pip check
+-
+-      - name: Prepare and verify Kafka topic
+-        run: |
+-          docker exec "${{ job.services.kafka.id }}" /opt/kafka/bin/kafka-topics.sh \
+-            --bootstrap-server 127.0.0.1:9092 --create --if-not-exists \
+-            --topic booking.weather.v1 --partitions 1 --replication-factor 1
+-          python - <<'PY'
+-          import os
+-          from kafka import KafkaConsumer
+-
+-          consumer = KafkaConsumer(bootstrap_servers=os.environ["KAFKA_BOOTSTRAP_SERVERS"],
+-                                   request_timeout_ms=10000)
+-          try:
+-              partitions = consumer.partitions_for_topic("booking.weather.v1")
+-              if partitions != {0}:
+-                  raise SystemExit(f"Kafka topic must have one partition: {partitions}")
+-              print("Runner connected to Kafka; booking.weather.v1 has one partition")
+-          finally:
+-              consumer.close()
++          python3 - <<'PY'
++          import unittest
++          suite = unittest.defaultTestLoader.discover('scripts', pattern='test_ci_production.py')
++          discovered = suite.countTestCases()
++          result = unittest.TextTestRunner(verbosity=2).run(suite)
++          complete = discovered >= 12 and result.testsRun == discovered
++          passed = result.wasSuccessful() and not (result.skipped or result.expectedFailures)
++          raise SystemExit(0 if complete and passed else 1)
+           PY
+ 
+-      - name: Create CI test role
++      - name: Prepare new isolated Compose project
++        id: prepare
++        run: >-
++          python3 scripts/ci_production.py prepare
++          --state-dir "$RUNNER_TEMP/kazan-private"
++          --artifacts "$RUNNER_TEMP/kazan-safe-results"
++
++      - name: Build, run, fail dependencies and test P01-P05
++        id: tests
++        timeout-minutes: 23
++        run: >-
++          python3 scripts/ci_production.py run
++          --state-dir "$RUNNER_TEMP/kazan-private"
++          --artifacts "$RUNNER_TEMP/kazan-safe-results"
++
++      - name: Audit secrets and clean only this test project
++        id: finalize
++        if: always()
++        timeout-minutes: 12
++        run: >-
++          python3 scripts/ci_production.py finalize
++          --state-dir "$RUNNER_TEMP/kazan-private"
++          --artifacts "$RUNNER_TEMP/kazan-safe-results"
++
++      - name: Explicit PASS or FAIL summary
++        if: always()
+         env:
+-          POSTGRES_PASSWORD: ci-bootstrap-only
++          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
++          TESTS_OUTCOME: ${{ steps.tests.outcome }}
++          FINALIZE_OUTCOME: ${{ steps.finalize.outcome }}
+         run: |
+-          python - <<'PY'
++          python3 - <<'PY'
+           import os
+-          import secrets
+-
+-          import psycopg
+-          from psycopg import sql
+-
+-          password = secrets.token_urlsafe(32)
+-          print(f"::add-mask::{password}", flush=True)
+-          with psycopg.connect(
+-              host=os.environ["DB_HOST"],
+-              port=os.environ["DB_PORT"],
+-              dbname="postgres",
+-              user="postgres",
+-              password=os.environ["POSTGRES_PASSWORD"],
+-              autocommit=True,
+-          ) as connection:
+-              connection.execute(
+-                  sql.SQL(
+-                      "CREATE ROLE kazan_test LOGIN NOSUPERUSER NOCREATEROLE "
+-                      "CREATEDB NOREPLICATION NOBYPASSRLS PASSWORD {}"
+-                  ).format(sql.Literal(password))
+-              )
+-
+-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment:
+-              environment.write(f"DB_PASSWORD={password}\n")
+-          print("CI test role created")
++          from pathlib import Path
++          destination = Path(os.environ['RUNNER_TEMP']) / 'kazan-safe-results'
++          destination.mkdir(exist_ok=True)
++          passed = all(os.environ[name] == 'success' for name in
++                       ('PREPARE_OUTCOME', 'TESTS_OUTCOME', 'FINALIZE_OUTCOME'))
++          status = 'PASS' if passed else 'FAIL'
++          with (destination / 'summary.txt').open('a') as output:
++              output.write(f'{status} overall CI\n')
++          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
++              output.write('### KazanCourts P01-P05: ' + status + '\n\n')
++              output.write('```text\n' + (destination / 'summary.txt').read_text() + '```\n')
++          print(status + ' overall CI')
++          raise SystemExit(0 if passed else 1)
+           PY
+ 
+-      - name: Check Python, Django, database and home page
+-        run: |
+-          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+-          python -m compileall -q manage.py config bookings test_database.py
+-          python manage.py check
+-          python manage.py makemigrations --check --dry-run
+-          set -o pipefail
+-          python manage.py test test_database bookings --verbosity 2 --noinput 2>&1 | tee "$RUNNER_TEMP/django-tests.log"
+-          python - <<'PY'
+-          import os
+-          from pathlib import Path
+-
+-          log = (Path(os.environ["RUNNER_TEMP"]) / "django-tests.log").read_text(encoding="utf-8")
+-          names = (
+-              "test_invalid_record_is_redelivered_and_blocks_later_message",
+-              "test_forecast_outbox_real_broker_consumer_and_redelivery",
+-          )
+-          for name in names:
+-              marker = f"{name} (bookings.tests.test_kafka_pipeline.KafkaIntegrationTests.{name}) ... ok"
+-              if marker not in log:
+-                  raise SystemExit(f"Kafka integration test did not pass: {name}")
+-          print("Both real Kafka integration tests passed")
+-          PY
+-          python - <<'PY'
+-          import os
+-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+-
+-          import django
+-          django.setup()
+-
+-          from django.db import connection
+-          with connection.cursor() as cursor:
+-              cursor.execute(
+-                  "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = %s)",
+-                  ["test_kazan_courts"],
+-              )
+-              if cursor.fetchone()[0]:
+-                  raise SystemExit("Test database still exists after the test run")
+-          print("Test database removed: OK")
+-
+-          from django.test import Client
+-          client = Client()
+-          response = client.get("/", HTTP_HOST="localhost")
+-          if response.status_code != 302 or response.url != "/login/?next=/":
+-              raise SystemExit("Anonymous GET / did not redirect to login")
+-          response = client.get("/login/", HTTP_HOST="localhost")
+-
+-          if response.status_code != 200:
+-              raise SystemExit(f"GET /login/ returned {response.status_code}")
+-          if b"<h1>KazanCourts</h1>" not in response.content:
+-              raise SystemExit("Expected heading is missing")
+-
+-          print("Anonymous GET /: login redirect; GET /login/: HTTP 200")
+-          PY
+-          test ! -e db.sqlite3
++      - name: Upload audited results only
++        if: always()
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
++        with:
++          name: kazancourts-p01-p05-${{ github.run_id }}-${{ github.run_attempt }}
++          path: ${{ runner.temp }}/kazan-safe-results/
++          if-no-files-found: error
++          retention-days: 14
+--- a/README.md
++++ b/README.md
+@@ -512,3 +512,9 @@
+ [фактический отчёт](docs/homework-05/testing-report.md),
+ [открытые backup/restore](docs/homework-05/backup-restore.md).
+ P06–P13, production deployment, полное обновление/восстановление и итоговая приёмка не заявляются.
++
++### Review P01–P05: CI и PostgreSQL volumes
++
++[Подготовленный облачный CI и статус повторного Review](docs/homework-05/ci-review.md).
++[Риск Debian → Alpine и раздельные volumes](docs/homework-05/postgresql-volume-review.md).
++Новое имя Alpine-volume защищает старые Debian-данные от автоматического подключения. Сам перенос данных не выполнен.
+--- a/compose.yaml
++++ b/compose.yaml
+@@ -32,7 +32,7 @@
+       DEV_DB_PASSWORD: ${DEV_DB_PASSWORD:?Set DEV_DB_PASSWORD}
+       TEST_DB_PASSWORD: ${TEST_DB_PASSWORD:?Set TEST_DB_PASSWORD}
+     volumes:
+-      - compose_postgres_data:/var/lib/postgresql
++      - compose_postgres_alpine_data:/var/lib/postgresql
+     healthcheck:
+       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
+       interval: 5s
+@@ -120,5 +120,5 @@
+         condition: service_healthy
+ 
+ volumes:
+-  compose_postgres_data:
++  compose_postgres_alpine_data:
+   compose_kafka_data:
+--- /dev/null
++++ b/config/ci_runner.py
+@@ -0,0 +1,28 @@
++"""Machine-readable evidence for the isolated Compose CI suite."""
++import json
++import os
++from pathlib import Path
++from django.test.runner import DiscoverRunner
++
++
++class CIResultRunner(DiscoverRunner):
++    def run_suite(self, suite, **kwargs):
++        def ids(item):
++            if hasattr(item, 'id'):
++                return [item.id()]
++            return [name for child in item for name in ids(child)]
++        self.discovered_ids = ids(suite)
++        return super().run_suite(suite, **kwargs)
++
++    def suite_result(self, suite, result, **kwargs):
++        data = {
++            'discovered_ids': self.discovered_ids,
++            'tests_run': result.testsRun,
++            'failures': len(result.failures),
++            'errors': len(result.errors),
++            'skipped': len(result.skipped),
++            'expected_failures': len(result.expectedFailures),
++            'unexpected_successes': len(result.unexpectedSuccesses),
++        }
++        Path(os.environ['KAZAN_TEST_RESULTS']).write_text(json.dumps(data), encoding='utf-8')
++        return super().suite_result(suite, result, **kwargs)
+--- /dev/null
++++ b/docs/homework-05/ci-review.md
+@@ -0,0 +1,42 @@
++# Повторный Review P01–P05: облачный CI и PostgreSQL
++
++Дата: 14 ноября 2026. Работа в прежнем worktree и ветке `feature/hw05-kazancourts-production`.
++Исходные незакоммиченные изменения сохранены; перед работой создана отдельная копия исходников без `.env`.
++По сообщению пользователя первоначальный независимый Review реализации пройден с двумя открытыми вопросами. Этот документ отвечает на них; повторная независимая приёмка ещё не проведена.
++
++## Изменения
++
++- Существующий job `django-check` теперь проверяет фактический Compose вместо другого стенда из Actions services. Используется только GitHub-hosted `ubuntu-24.04`. Оригинальные закреплённые checkout/setup-node сохранены; upload-artifact также закреплён SHA.
++- `prepare` отказывается использовать существующие project resources/images/state. Создаёт отдельный приватный env-файл, не трогает локальный `.env`; secrets не записываются в GitHub variables или вывод команд.
++- `run`: build `--pull --no-cache`, up/wait, проверка каждого сервиса и exit0 миграций, Django check/схема, реальные DB/Kafka stop/recover, down/up с сохранением тестовых данных, затем остановка workers для тестов Kafka, полный Django и JS наборы.
++- Новый `config.ci_runner.CIResultRunner` сохраняет JSON с обнаруженными test IDs, фактическим числом выполнений и всеми исходами. Проверка требует не менее 221 теста, соответствия discovery/execution, присутствия обоих real Kafka tests, отсутствия failures/errors/skips/expected failures/unexpected successes. При добавлении тестов число берётся из discovery и JSON. Для TAP JavaScript требуется не менее 4 тестов, все pass, без skipped/cancelled/todo.
++- `always()` выполняет аудит временных секретов, остановку и очистку только этого нового project. Проверяет отсутствие его containers/networks/volumes/local build images. Приватный env и raw-логи удаляются. Сторонние volumes/images не удаляются.
++- Только аудированные логи/JSON попадают в artifact. В случае утечки или ошибки аудита/cleanup подробные данные не выгружаются, остаётся фиксированный summary FAIL. Exit status тестовой фазы не подменяется успешным cleanup. Сводка workflow учитывает outcome всех фаз.
++- Alpine PostgreSQL использует отдельный volume key; [минимальное решение и риск](postgresql-volume-review.md). Старые volumes не подключались и не удалялись.
++
++## Политика проверки секретов
++
++Все четыре временных значения проверяются без маскирования в исходных raw-результатах, исходниках/diff и config/history/**всех слоях всех образов** этого проекта, включая неизменённый официальный Kafka.
++Проверка идёт до публикации результатов. Если найдено значение, прогон FAIL, даже если последующая redaction удаляет его из безопасной сводки.
++
++Для собственного Django/DB образов, кода и логов также выполняется поиск распространённых credential/key-сигнатур. Официальный неизменённый `apache/kafka:4.2.2` содержит встроенный PEM-материал в `libgnutls.so`; это отдельно воспроизведено аудитом upstream image. Для этого образа применяется явный режим `--temporary-secrets-only-image`: он **сохраняет полный поиск генерируемых CI-значений**, но не заявляет отсутствие всех upstream test-key fixtures. Образ Kafka и механизмы Kafka не изменены. Это ограничение проверки, а не скрытый PASS общего security audit.
++
++Негативные проверки подтверждают: значения временного секрета даже в таком upstream image дают FAIL; leaked raw-лог не попадает в artifact; отсутствие owner marker запрещает cleanup; пропущенные/нулевые/неполные тесты и отсутствие Kafka tests не проходят.
++
++## Проверено в Codex
++
++Статусы окончательного прогона и точные числа находятся в приложенных безопасных результатах. GitHub YAML проверен `actionlint` 1.7.7 (официальный архив проверен по SHA256). Контракты конфигурации проверяют GitHub-hosted runner и раздельные volumes. Python helper syntax и отрицательные проверки результата выполнены локально в облаке.
++
++Два запуска оркестратора разделены: первый выполнил Compose/221 Django/4 JS, но корректно завершился **FAIL** на общей сигнатуре в upstream Kafka; cleanup прошёл, подробные raw-логи не выгружены. После уточнения явного scope upstream image выполнен новый полный прогон на свежем project. Его финальный статус фиксируется в [testing-report](testing-report.md).
++Codex-прогон использует только дополнительный build-secret CA для облачного прокси. GitHub-hosted runner не нуждается в этом cloud override. Прямое исполнение Python оркестратора в Codex не является запуском GitHub Actions.
++
++## Проверено в GitHub Actions
++
++**Not Run для этой версии изменений.** Нет run URL/commit с данным workflow, artifact или подтверждённого GitHub-hosted результата. Commit/push/PR/merge/deployment и workflow_dispatch в этой задаче не выполнялись и не разрешены.
++
++После отдельного разрешения потребуется опубликовать изменения в feature-ветке и проверить настоящий Actions run: SHA, все phase outcomes, JSON counts, отсутствие skips, cleanup и скачанный artifact. До этого готовность именно GitHub execution environment остаётся открытой.
++
++## Пока не проверено
++
++Фактическое исполнение workflow на GitHub-hosted runner, загрузка artifact сервисом GitHub, job cancellation/host failure cleanup. Работа со старыми Debian volumes, физическая совместимость и перенос рабочих данных не проверялись; in-place переход не предлагается.
++P06–P13 и полный production readiness не начаты. Изменений booking rules/weather/Kafka processing нет.
+--- a/docs/homework-05/operations.md
++++ b/docs/homework-05/operations.md
+@@ -59,3 +59,19 @@
+ ## Восстановление системы
+ 
+ P13: **Not Run / не реализовано на этом этапе**. См. [backup-restore](backup-restore.md); дамп и restore не проверены.
++
++## Дополнение Review: безопасность существующего PostgreSQL volume
++
++Для Alpine введён отдельный `compose_postgres_alpine_data`. Старый Debian `compose_postgres_data` сохраняется и не подключается к Alpine. Существующий стенд с данными нельзя обновлять сменой образа или переименованием тома; он остаётся на прежней конфигурации до отдельного плана переноса. Новый volume означает новую пустую БД.
++[Анализ и минимальное решение](postgresql-volume-review.md).
++
++## Полностью облачный CI (подготовлен, GitHub запуск пока не подтверждён)
++
++`.github/workflows/ci.yml` использует только GitHub-hosted `ubuntu-24.04`.
++Runner создаёт отдельный `kc-hw05-ci-<run_id>-<attempt>` project, приватный файл временных credentials в RUNNER_TEMP, полностью пересобирает Compose, проверяет все сервисы/миграции/отказы зависимостей, полный Django и JS наборы, затем аудит и cleanup.
++Никаких self-hosted runner, ASUS/MSI, production credentials или реальных интеграций не требуется. `WEATHER_NETWORK_ENABLED=0` задаётся конфигурацией тестового файла.
++
++После отдельного разрешения на commit/push workflow можно запустить на feature-ветке, PR в main или вручную через workflow_dispatch, когда эта версия workflow доступна на default branch. Само наличие workflow не считается успешным Actions run. Для подтверждения нужны run URL, commit SHA, зелёный job, точные counts и проверенный artifact.
++
++Только прошедшие аудит логи/JSON и фиксированные PASS/FAIL summary попадают в artifact `kazancourts-p01-p05-<run_id>-<attempt>` (14 дней). Если аудит или cleanup не прошёл, подробные raw-логи не публикуются; остаётся безопасный summary с FAIL. Они не выводятся через tee в Actions console. Полный runtime environment/inspect контейнеров не выгружается.
++Cleanup в `always()` останавливает проект, удаляет только его новые тестовые volumes/network/контейнеры/локальные build images, удаляет временные секреты и raw-логи. Принудительное завершение runner/job может прервать cleanup; такой запуск не является PASS. GitHub утилизирует hosted runner, но это не заменяет проверяемый cleanup в успешном прогоне.
+--- /dev/null
++++ b/docs/homework-05/postgresql-volume-review.md
+@@ -0,0 +1,28 @@
++# PostgreSQL Debian → Alpine: решение Review
++
++Дата: 14 ноября 2026. Scope: анализ риска и защита конфигурации; перенос рабочих данных не выполнялся.
++
++## Почему нельзя просто сменить tag
++
++Одинаковая версия сервера 18.6 сама по себе не доказывает совместимость физического каталога данных между Debian/glibc и Alpine/musl. Могут отличаться libc/locale/ICU, правила collation, версии библиотек и расширений, UID/GID postgres. Каталог `PGDATA` и major-version могут совпасть, при этом сортировка и соответствующие индексы будут работать иначе. Успешный старт и SELECT 1 этого не выявляют. Init entrypoint может менять владельца файлов, поэтому даже пробное подключение старого тома к новому контейнеру не является безопасной read-only проверкой.
++
++`ALTER COLLATION ... REFRESH VERSION` обновляет метаданные, но само по себе не перестраивает индексы и не доказывает корректность данных. Это не автоматическое решение перехода libc.
++
++## Минимальное решение на этом этапе
++
++1. Для новых локальных/CI-стендов остаётся `postgres:18.6-alpine`, выбранный после аудита слоёв.
++2. Compose использует новое имя `compose_postgres_alpine_data`. Старое `compose_postgres_data` не указано в mounts или объявлениях volumes новой конфигурации. В рамках одного project имя нового volume будет `<project>_compose_postgres_alpine_data`.
++3. Старый Debian-volume сохраняется. Нельзя переименовывать его, прописывать его имя через external volume override или подключать его к Alpine.
++4. Новый volume — пустая отдельная БД. Это не миграция и не доказательство потери старых данных. Если в существующем стенде нужны прежние данные, **не переключать его на новый Compose**, продолжать прежний Debian-стек до отдельного решения о переносе.
++5. Не применять `down --volumes` к старому проекту. CI удаляет только собственные заново созданные ресурсы с уникальным префиксом и проверенным ownership marker. Все проверки здесь используют новые тестовые volumes.
++
++Цена: старый и новый стенды используют разные данные. Автоматическое обновление существующего стенда не заявляется. Изменение имени volume предотвращает случайное физическое переиспользование, но не заменяет план миграции.
++
++## Что потребуется отдельно, если перенос данных будет разрешён
++
++Выбрать source/target версии, локали и расширения, зафиксировать downtime и rollback. Выполнить логический dump/restore в новый volume, проверить ограничения, collation/indexes, контрольные данные, API и фоновые сценарии. Исходный Debian-volume сохранить до приёмки. Это только перечень решений для отдельной задачи, **не выполненная практика P11/P12/P13**; готового production-runbook или команды удаления данных здесь нет.
++
++## Доказательства и открытые вопросы
++
++Статическая проверка новой конфигурации и чистый запуск с новым volume выполняются в Codex, с отдельным CI project. Существующие volumes не монтировались и не удалялись.
++Фактический Debian→Alpine перенос данных, проверка collation на рабочих данных и GitHub Actions запуск пока **Not Run**.
+--- a/docs/homework-05/production-practice.md
++++ b/docs/homework-05/production-practice.md
+@@ -79,3 +79,10 @@
+ Он не закрывает весь Track A/B/C, CI/CD, deployment, TLS, rollback или понимание пользователя.
+ Автоматические миграции здесь выбраны для воспроизводимого локального стенда; план production-миграций и rollback остаётся P13.
+ Собственный design/выбор пользователя и защита не реконструируются задним числом. Это реализация агента в рамках прямого поручения и материал для Review.
++
++
++## Дополнение повторного Review (14 ноября)
++
++Первоначальная реализация независимо проверена; открытые вопросы CI и PostgreSQL рассмотрены в [ci-review](ci-review.md) и [volume review](postgresql-volume-review.md).
++Для новых Alpine-стендов Compose использует `compose_postgres_alpine_data`, сохраняя старый Debian-volume отдельно. Автоматический перенос данных не выполняется.
++Подготовлен hosted CI P01–P05; Codex и GitHub доказательства разделены в testing-report. Это не начало P06–P13, не новый observability/CI-CD deployment этап и не заявление об успешном Actions run.
+--- a/docs/homework-05/testing-report.md
++++ b/docs/homework-05/testing-report.md
+@@ -1,6 +1,6 @@
+ # KazanCourts P01–P05 — фактические проверки
+ 
+-Дата: 13 ноября 2026, Europe/Moscow. Независимый Review: **ещё не выполнен**.
++Дата: 13 ноября 2026, Europe/Moscow. Первоначальный независимый Review пройден с двумя открытыми вопросами (сообщение пользователя 14 ноября); повторный Review изменений CI/volume ещё не выполнен.
+ База: `3bd07ae8c5357faf54e38b89fa921c42b3dbdd8b`; исходная ветка `work` оставлена без изменений.
+ Worktree: `/workspace/kazan-courts-hw05`, ветка `feature/hw05-kazancourts-production`.
+ Источники получены из `KazanCourts_HW005_required_sources.zip`; оригиналы лежат в `sources/`.
+@@ -81,3 +81,30 @@
+ Существующий CI bootstrap password — синтетический пароль временной CI-БД, не production credential; workflow на GitHub не запускался.
+ Локальный runserver сохранён. Полный production deployment, security audit и итоговый CP5 этим этапом не закрыты.
+ Commit/push/PR/merge/deployment не выполнялись. Итог передаётся для независимого Review.
++
++
++## Повторный Review 14 ноября: CI и PostgreSQL
++
++Подробный [отчёт изменений и границ](ci-review.md), [риск старых volumes](postgresql-volume-review.md).
++Предыдущие строки PASS относятся к исполнению в Codex, а не GitHub Actions.
++
++| Проверка новой версии | Codex | GitHub Actions |
++|---|---|---|
++| Workflow actionlint 1.7.7, Python syntax, раздельный volume | PASS | Not Run |
++| Негативные тесты CI evidence/safety gates | PASS, 12 тестов | Not Run |
++| Полный cold Compose CI orchestration | PASS: prepare=0/run=0/finalize=0, свежий kc-hw05-ci-codex-20261114-b | Not Run |
++| Реальные health/readiness failures/recovery | PASS: live200, ready200→503→200 для DB и Kafka, сохранённые данные после down/up | Not Run |
++| Django JSON discovery/execution и реальные Kafka tests | PASS: discovered=221, tests_run=221, failures/errors/skipped/expected_failures/unexpected_successes=0 | Not Run |
++| JS TAP counts, отсутствие skips | PASS: tests=4/pass=4, fail/cancelled/skipped/todo=0 | Not Run |
++| Temporary secrets audit всех образов, безопасные артефакты | PASS в явно указанном scope; generic signatures собственных образов, temporary values всех образов | Not Run |
++| Cleanup новых ресурсов и секретного файла | PASS: containers/networks/volumes/local images отсутствуют; runtime.env/raw удалены | Not Run |
++| Перенос существующего Debian-volume на Alpine | Not Run; не разрешён | Not Run |
++
++Первый Codex CI run: prepare=0, run=0, finalize=1, общий FAIL. Причина — PEM-материал upstream libgnutls официального Kafka. Подробные raw-логи были удержаны и удалены; остался безопасный summary. Для unchanged upstream Kafka явно выделен scope временных генерируемых значений, остальные generic проверки сохранены. Дополнительный негативный тест подтверждает отказ при реальной утечке временного значения в этом режиме. Полный повторный run выполняется на новом project; результат не подменяется успешным первым тестовым этапом.
++
++В настоящей задаче commit/push/PR/merge/deployment/dispatch не выполнялись. Прежний архив Review был ранее загружен в отдельную отчётную ветку по предыдущему поручению; он не содержит новую версию CI.
++
++
++Финальный Codex CI run (`cloud-run-b.log`): **PASS**. Машинные результаты и аудированные stdout/stderr находятся в `ci-results/`, включая `django-results.json`, `js-tests.log`, `health-failure-recovery.log`, `secret-audit.log`, `cleanup.log` и `summary.txt`.
++Первый FAIL run оставлен отдельно (`first-run-summary.txt`); не смешан с успешным повтором. `unit.log` содержит ожидаемые строки FAIL внутри негативных сценариев, но unittest-итог **12 tests, OK**.
++`actionlint` официальный checksum проверен; workflow lint — PASS. Сводка не утверждает успешный GitHub Actions run: для GitHub всё ещё Not Run.
+--- a/scripts/audit_local_secrets.py
++++ b/scripts/audit_local_secrets.py
+@@ -10,12 +10,15 @@
+ import tempfile
+ 
+ parser = argparse.ArgumentParser()
++parser.add_argument('--temporary-secrets-only-image', action='append', default=[],
++                    help='For an unmodified upstream image, scan all generated secrets; do not claim a generic fixture/key audit')
++parser.add_argument('--env-file', type=Path)
+ parser.add_argument('--logs', type=Path, required=True)
+ parser.add_argument('--image', action='append', required=True)
+ args = parser.parse_args()
+ root = Path(__file__).resolve().parent.parent
+ names = {'POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY'}
+-values = [line.split('=', 1)[1].encode() for line in (root / '.env').read_text().splitlines()
++values = [line.split('=', 1)[1].encode() for line in (args.env_file or root / '.env').read_text().splitlines()
+           if line.partition('=')[0] in names]
+ assert len(values) == 4 and all(len(value) >= 32 for value in values)
+ 
+@@ -25,8 +28,8 @@
+             rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----']
+ 
+ 
+-def clean(data, location):
+-    if any(re.search(pattern, data) for pattern in patterns):
++def clean(data, location, signatures=True):
++    if signatures and any(re.search(pattern, data) for pattern in patterns):
+         raise SystemExit(f'FAIL credential signature detected in {location}; value withheld')
+     if any(value in data for value in values):
+         raise SystemExit(f'FAIL local credential detected in {location}; value withheld')
+@@ -49,8 +52,9 @@
+     if identity in seen:
+         continue
+     seen.add(identity)
+-    clean(subprocess.check_output(['docker', 'image', 'inspect', image]), 'image config')
+-    clean(subprocess.check_output(['docker', 'history', '--no-trunc', image]), 'image history')
++    signatures = image not in args.temporary_secrets_only_image
++    clean(subprocess.check_output(['docker', 'image', 'inspect', image]), 'image config', signatures)
++    clean(subprocess.check_output(['docker', 'history', '--no-trunc', image]), 'image history', signatures)
+     with tempfile.TemporaryFile() as archive:
+         subprocess.run(['docker', 'save', image], stdout=archive, check=True)
+         archive.seek(0)
+@@ -61,7 +65,8 @@
+                 source = saved.extractfile(member)
+                 tail = b''
+                 while block := source.read(1024 * 1024):
+-                    clean(tail + block, 'saved image layer/config')
++                    clean(tail + block, 'saved image layer/config', signatures)
+                     tail = block[-max(map(len, values)):]
+-    print(f'PASS image config, history and all saved layers: {image}')
++    scope = 'generated temporary credentials only' if not signatures else 'generated credentials and common signatures'
++    print(f'PASS image config, history and all saved layers: {image}; scope={scope}')
+ print('Scope: four generated local credentials; .env excluded intentionally; historical secrets not certified.')
+--- a/scripts/check_production.py
++++ b/scripts/check_production.py
+@@ -12,6 +12,7 @@
+ from urllib.request import urlopen
+ 
+ parser = argparse.ArgumentParser()
++parser.add_argument('--env-file')
+ parser.add_argument('--project', required=True)
+ parser.add_argument('--port', required=True, type=int)
+ args = parser.parse_args()
+@@ -20,6 +21,8 @@
+ if not 1024 <= args.port <= 65535:
+     parser.error('choose an unprivileged local port')
+ compose = ['docker', 'compose', '-p', args.project]
++if args.env_file:
++    compose += ['--env-file', args.env_file]
+ base = f'http://127.0.0.1:{args.port}'
+ actual = subprocess.check_output([*compose, 'port', 'web', '8000'], text=True).strip()
+ if actual != f'127.0.0.1:{args.port}':
+--- /dev/null
++++ b/scripts/ci_production.py
+@@ -0,0 +1,232 @@
++"""Isolated P01-P05 CI orchestration. Raw logs never reach the Actions console.
++
++prepare/run/finalize are separate so finalize can run under Actions always().
++Only this run's new project and private state are eligible for cleanup.
++"""
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import shutil
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parent.parent
++SECRET_NAMES = {'POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY'}
++KAFKA_TESTS = {
++    'bookings.tests.test_kafka_pipeline.KafkaIntegrationTests.test_invalid_record_is_redelivered_and_blocks_later_message',
++    'bookings.tests.test_kafka_pipeline.KafkaIntegrationTests.test_forecast_outbox_real_broker_consumer_and_redelivery',
++}
++
++
++def validate_django(data):
++    names = data['discovered_ids']
++    if data['tests_run'] < 221 or data['tests_run'] != len(names) or len(set(names)) != len(names):
++        raise ValueError('Django executed count does not match discovery or is below 221')
++    if not KAFKA_TESTS <= set(names):
++        raise ValueError('required real Kafka integration tests are missing')
++    for field in ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes'):
++        if data[field] != 0:
++            raise ValueError('Django suite contains non-passing outcomes')
++
++
++def validate_js(text):
++    counts = {key: int(value) for key, value in re.findall(
++        r'^# (tests|pass|fail|cancelled|skipped|todo) (\d+)\s*$', text, re.M)}
++    if counts.get('tests', 0) < 4 or counts.get('pass') != counts.get('tests'):
++        raise ValueError('JavaScript test run missing or incomplete')
++    if any(counts.get(key, -1) != 0 for key in ('fail', 'cancelled', 'skipped', 'todo')):
++        raise ValueError('JavaScript suite contains non-passing outcomes')
++
++
++def redact(data, values):
++    for value in values:
++        data = data.replace(value, b'[REDACTED]')
++    return data
++
++
++class CI:
++    def __init__(self, state, artifacts):
++        self.state = state.resolve()
++        self.artifacts = artifacts.resolve()
++        self.env_file = self.state / 'runtime.env'
++        self.raw = self.state / 'raw'
++        self.project = os.environ['COMPOSE_PROJECT_NAME']
++        if not re.fullmatch(r'kc-hw05-ci-[a-z0-9-]+', self.project):
++            raise ValueError('use a new kc-hw05-ci-* project')
++        self.env = os.environ.copy()
++        # All runtime settings come from the generated CI file, not host bindings.
++        for name in SECRET_NAMES | {'KAFKA_BOOTSTRAP_SERVERS', 'WEATHER_NETWORK_ENABLED',
++                                    'DJANGO_DEBUG', 'DJANGO_ALLOWED_HOSTS', 'KAZAN_HTTP_PORT'}:
++            self.env.pop(name, None)
++        self.env.update(KAZAN_HTTP_PORT='18005', WEATHER_NETWORK_ENABLED='0',
++                        KAFKA_BOOTSTRAP_SERVERS='kafka:9092')
++        self.dc = ['docker', 'compose', '-p', self.project, '--env-file', str(self.env_file)]
++
++    def record(self, name, status):
++        self.artifacts.mkdir(parents=True, exist_ok=True)
++        with (self.artifacts / 'summary.txt').open('a') as output:
++            output.write(f'{status} {name}\n')
++        print(f'{status} {name}', flush=True)
++
++    def command(self, name, argv, env=None, timeout=240):
++        self.raw.mkdir(parents=True, exist_ok=True, mode=0o700)
++        with (self.raw / (name + '.log')).open('wb') as output:
++            result = subprocess.run(argv, cwd=ROOT, env=env or self.env, stdout=output,
++                                    stderr=subprocess.STDOUT, timeout=timeout)
++        if result.returncode:
++            self.record(name, 'FAIL')
++            raise RuntimeError('command failed; see audited artifact logs')
++        self.record(name, 'PASS')
++
++    def prepare(self):
++        if self.state.exists() or self.artifacts.exists():
++            raise ValueError('CI state/artifacts must be new directories')
++        # Refuse existing project resources BEFORE issuing any mutating command.
++        for kind in ('container', 'volume', 'network'):
++            result = subprocess.check_output(['docker', kind, 'ls', '-q', '--filter',
++                f'label=com.docker.compose.project={self.project}'], env=self.env)
++            if result.strip():
++                raise ValueError('project already owns Docker resources; refusing reuse')
++        existing_images = subprocess.check_output(['docker', 'image', 'ls', '-q', '--filter',
++            f'reference={self.project}-*'], env=self.env)
++        if existing_images.strip():
++            raise ValueError('project already has images; refusing reuse')
++        self.state.mkdir(parents=True, mode=0o700)
++        self.raw.mkdir(mode=0o700)
++        (self.state / 'owner.json').write_text(json.dumps({'project': self.project}))
++        self.command('generate-env', [sys.executable, 'scripts/init_local_env.py', '--output', str(self.env_file)])
++        self.command('compose-config', self.dc + ['config', '--quiet'])
++
++    def run(self):
++        self.command('build', self.dc + ['build', '--pull', '--no-cache'], timeout=900)
++        self.command('start', self.dc + ['up', '-d', '--wait', '--wait-timeout', '180'], timeout=300)
++        self.command('services', self.dc + ['ps', '--all', '--format', 'json'])
++        items = (self.raw / 'services.log').read_text()
++        try:
++            states = json.loads(items)
++        except json.JSONDecodeError:
++            states = [json.loads(line) for line in items.splitlines() if line.strip()]
++        by_name = {row['Service']: row for row in states}
++        if any(by_name.get(name, {}).get('State') != 'running' for name in
++               ('web', 'db', 'kafka', 'scheduler', 'publisher', 'consumer')):
++            raise ValueError('required Compose service is missing/stopped')
++        if by_name.get('migrate', {}).get('ExitCode') != 0:
++            raise ValueError('migration job did not complete successfully')
++        self.record('all-services-and-migrations', 'PASS')
++        self.command('django-check', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'check'])
++        self.command('migrations', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'migrate', '--check'])
++        self.command('model-drift', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'makemigrations', '--check', '--dry-run'])
++        self.command('seed-before', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'seed_demo_data'])
++        self.command('health-failure-recovery', [sys.executable, 'scripts/check_production.py',
++            '--project', self.project, '--port', '18005', '--env-file', str(self.env_file)], timeout=480)
++        self.command('seed-after', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'seed_demo_data'])
++        if '0 courts and 0 customers created' not in (self.raw / 'seed-after.log').read_text():
++            raise ValueError('demo data did not survive retained-volume restart')
++        self.command('pause-workers', self.dc + ['stop', 'scheduler', 'publisher', 'consumer'])
++        bindings = dict(line.split('=', 1) for line in self.env_file.read_text().splitlines()
++                        if '=' in line and not line.startswith('#'))
++        env = self.env.copy()
++        env['DB_PASSWORD'] = bindings['TEST_DB_PASSWORD']
++        self.command('django-tests', self.dc + ['exec', '-T', '-e', 'DB_NAME=postgres', '-e', 'DB_USER=kazan_test',
++            '-e', 'DB_PASSWORD', '-e', 'KAFKA_INTEGRATION=1', '-e', 'KAZAN_TEST_RESULTS=/tmp/ci-tests.json',
++            'web', 'python', 'manage.py', 'test', 'test_database', 'bookings', 'config.test_health',
++            '--testrunner=config.ci_runner.CIResultRunner', '--verbosity', '2', '--noinput'], env=env)
++        self.command('collect-django-results', self.dc + ['cp', 'web:/tmp/ci-tests.json', str(self.raw / 'django-results.json')])
++        validate_django(json.loads((self.raw / 'django-results.json').read_text()))
++        self.record('django-counts-no-skips-and-real-kafka', 'PASS')
++        self.command('js-tests', ['node', '--test', '--test-reporter=tap', 'bookings/tests/operator_queue_ui.test.js'])
++        validate_js((self.raw / 'js-tests.log').read_text())
++        self.record('javascript-counts-no-skips', 'PASS')
++        self.command('post-tests-db', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'shell', '-c',
++            "from django.db import connection; c=connection.cursor(); c.execute(\"SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname='test_kazan_courts'), has_database_privilege('kazan_test','kazan_courts_dev','CONNECT')\"); assert c.fetchone()==(False,False); print('PASS isolated test DB removed and dev connection denied')"])
++        self.record('test-phase', 'PASS')
++
++    def finalize(self):
++        owner = self.state / 'owner.json'
++        if not owner.exists() or json.loads(owner.read_text())['project'] != self.project:
++            self.record('cleanup-not-authorized-no-owner', 'FAIL')
++            return 1
++        failed = False
++        try:
++            self.command('service-logs', self.dc + ['logs', '--no-color', '--tail', '300'])
++            image_text = subprocess.check_output(self.dc + ['images', '-q'], cwd=ROOT, env=self.env, text=True)
++            images = sorted(set(image_text.split()))
++            if not images:
++                raise ValueError('no images available for leak audit')
++            argv = [sys.executable, 'scripts/audit_local_secrets.py', '--env-file', str(self.env_file), '--logs', str(self.raw)]
++            for image in images:
++                argv += ['--image', image]
++            # Kafka is an unchanged upstream image. Its GnuTLS library contains
++            # built-in PEM material. Scan every layer for our generated values;
++            # generic signatures remain mandatory for code/logs/our own images.
++            kafka_images = subprocess.check_output(self.dc + ['images', '-q', 'kafka'],
++                cwd=ROOT, env=self.env, text=True).split()
++            for image in kafka_images:
++                argv += ['--temporary-secrets-only-image', image]
++            self.command('secret-audit', argv, timeout=600)
++        except Exception:
++            failed = True
++            self.record('secret-audit-or-collection', 'FAIL')
++        try:
++            self.command('cleanup', self.dc + ['down', '--volumes', '--remove-orphans', '--rmi', 'local'], timeout=180)
++            for kind in ('container', 'volume', 'network'):
++                remaining = subprocess.check_output(['docker', kind, 'ls', '-q', '--filter',
++                    f'label=com.docker.compose.project={self.project}'], env=self.env)
++                if remaining.strip():
++                    raise ValueError('temporary project resource remains')
++            if subprocess.check_output(['docker', 'image', 'ls', '-q', '--filter',
++                    f'reference={self.project}-*'], env=self.env).strip():
++                raise ValueError('temporary project image remains')
++            self.record('cleanup-resources-verified', 'PASS')
++        except Exception:
++            failed = True
++            self.record('cleanup-resources-verified', 'FAIL')
++        # Only sanitized logs enter the upload directory; leak findings remain FAIL.
++        values = [line.split('=', 1)[1].encode() for line in self.env_file.read_text().splitlines()
++                  if line.partition('=')[0] in SECRET_NAMES] if self.env_file.exists() else []
++        if len(values) != 4:
++            failed = True
++        else:
++            for path in self.raw.iterdir():
++                if path.is_file():
++                    raw = path.read_bytes()
++                    if any(value in raw for value in values):
++                        failed = True
++                        self.record('raw-result-secret-leak', 'FAIL')
++                    safe = redact(raw, values)
++                    # On signature/audit failure withhold all raw output, including
++                    # unknown credential formats; retain only fixed status lines.
++                    if not failed:
++                        (self.artifacts / path.name).write_bytes(safe)
++        if failed:
++            for path in self.artifacts.iterdir():
++                if path.name != 'summary.txt':
++                    path.unlink()
++            self.record('finalization', 'FAIL')
++        else:
++            self.record('finalization', 'PASS')
++        self.env_file.unlink(missing_ok=True)
++        shutil.rmtree(self.raw, ignore_errors=True)
++        return int(failed)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('phase', choices=['prepare', 'run', 'finalize'])
++    parser.add_argument('--state-dir', type=Path, required=True)
++    parser.add_argument('--artifacts', type=Path, required=True)
++    args = parser.parse_args()
++    try:
++        ci = CI(args.state_dir, args.artifacts)
++        result = getattr(ci, args.phase)()
++        return result or 0
++    except Exception as error:
++        # Exception text/command args could include secrets: print type only.
++        print(f'FAIL {args.phase} ({type(error).__name__}); raw output withheld', flush=True)
++        return 1
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+--- a/scripts/init_local_env.py
++++ b/scripts/init_local_env.py
+@@ -1,14 +1,19 @@
+ """Create private, unique credentials for a NEW local Compose database."""
++import argparse
+ import os
+ from pathlib import Path
+ import secrets
++
++parser = argparse.ArgumentParser()
++parser.add_argument('--output', type=Path)
++args = parser.parse_args()
+ 
+ root = Path(__file__).resolve().parent.parent
+ text = (root / '.env.example').read_text(encoding='utf-8')
+ for name in ('POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY'):
+     text = text.replace(f'{name}=GENERATE_LOCALLY', f'{name}={secrets.token_urlsafe(48)}')
+ # O_EXCL prevents replacing credentials for an existing volume.
+-fd = os.open(root / '.env', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++fd = os.open(args.output or root / '.env', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+ with os.fdopen(fd, 'w', encoding='utf-8') as output:
+     output.write(text)
+ print('Created private .env for local development; values are not printed.')
+--- /dev/null
++++ b/scripts/test_ci_production.py
+@@ -0,0 +1,123 @@
++"""Verify that CI evidence gates reject misleading successful process exits."""
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from ci_production import CI, KAFKA_TESTS, redact, validate_django, validate_js
++
++
++class EvidenceTests(unittest.TestCase):
++    def good(self):
++        return dict(discovered_ids=sorted(KAFKA_TESTS) + [f'test.case_{i}' for i in range(219)],
++                    tests_run=221, failures=0, errors=0, skipped=0, expected_failures=0,
++                    unexpected_successes=0)
++
++    def test_complete_suite_passes(self):
++        validate_django(self.good())
++
++    def test_zero_test_and_incomplete_suites_fail(self):
++        for count in (0, 220, 222):
++            data = self.good()
++            data['tests_run'] = count
++            with self.subTest(count=count), self.assertRaises(ValueError):
++                validate_django(data)
++
++    def test_nonpassing_outcomes_fail_even_with_exit_zero(self):
++        for field in ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes'):
++            data = self.good()
++            data[field] = 1
++            with self.subTest(field=field), self.assertRaises(ValueError):
++                validate_django(data)
++
++    def test_missing_real_kafka_and_duplicate_discovery_fail(self):
++        for replacement in ('different.test', 'test.case_0'):
++            data = self.good()
++            data['discovered_ids'][0] = replacement
++            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
++                validate_django(data)
++
++    def test_new_tests_are_counted_automatically(self):
++        data = self.good()
++        data['discovered_ids'].append('new.actual.test')
++        data['tests_run'] += 1
++        validate_django(data)
++
++    def test_js_requires_all_four_actual_successes(self):
++        good = '# tests 4\n# pass 4\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n'
++        validate_js(good)
++        for text in ('', good.replace('tests 4', 'tests 0'), good.replace('pass 4', 'pass 3'),
++                     good.replace('skipped 0', 'skipped 1'), good.replace('# todo 0\n', '')):
++            with self.subTest(text=text), self.assertRaises(ValueError):
++                validate_js(text)
++
++    def test_redaction_removes_all_occurrences(self):
++        value = b'synthetic-only-not-a-credential'
++        self.assertNotIn(value, redact(value + b' ' + value, [value]))
++
++    def test_host_external_bindings_cannot_enable_weather_or_remote_broker(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ',
++                COMPOSE_PROJECT_NAME='kc-hw05-ci-safety', WEATHER_NETWORK_ENABLED='1',
++                KAFKA_BOOTSTRAP_SERVERS='external.invalid:9092'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            self.assertEqual(ci.env['WEATHER_NETWORK_ENABLED'], '0')
++            self.assertEqual(ci.env['KAFKA_BOOTSTRAP_SERVERS'], 'kafka:9092')
++
++    def test_refuse_existing_project_resources_before_creating_state(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-collision'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            with patch('ci_production.subprocess.check_output', return_value=b'existing-volume\n'):
++                with self.assertRaises(ValueError):
++                    ci.prepare()
++            self.assertFalse(ci.state.exists())
++
++    def test_no_owner_never_runs_docker_cleanup(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-test'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            with patch('ci_production.subprocess.run') as command:
++                self.assertEqual(ci.finalize(), 1)
++                command.assert_not_called()
++
++    def test_upstream_image_scope_still_rejects_temporary_secret(self):
++        import contextlib
++        import io
++        import runpy
++        with tempfile.TemporaryDirectory() as tmp:
++            env = Path(tmp) / 'runtime.env'
++            names = ('POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY')
++            value = b'synthetic-only-generated-temporary-value'
++            env.write_text('\n'.join(f'{name}={value.decode()}' for name in names))
++            def output(argv, **kwargs):
++                if argv[:2] == ['git', 'ls-files'] or argv[:2] == ['git', 'diff']:
++                    return b''
++                return b'fake-id' if '--format' in argv else value
++            with patch('sys.argv', ['audit', '--env-file', str(env), '--logs', tmp,
++                    '--image', 'upstream', '--temporary-secrets-only-image', 'upstream']), \
++                    patch('subprocess.check_output', side_effect=output), contextlib.redirect_stdout(io.StringIO()):
++                with self.assertRaises(SystemExit) as result:
++                    runpy.run_path(str(Path(__file__).with_name('audit_local_secrets.py')), run_name='__main__')
++                self.assertNotIn(value.decode(), str(result.exception))
++                self.assertIn('local credential', str(result.exception))
++
++    def test_a_leak_fails_finalize_and_withholds_logs(self):
++        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-leak'):
++            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
++            ci.state.mkdir(); ci.raw.mkdir()
++            import json
++            (ci.state / 'owner.json').write_text(json.dumps({'project': ci.project}))
++            ci.env_file.write_text('\n'.join(f'{name}={name}-synthetic-private-value' for name in
++                ('POSTGRES_PASSWORD', 'DEV_DB_PASSWORD', 'TEST_DB_PASSWORD', 'DJANGO_SECRET_KEY')))
++            leaked = b'POSTGRES_PASSWORD-synthetic-private-value'
++            (ci.raw / 'leak.log').write_bytes(leaked)
++            def read(argv, **kwargs):
++                return 'fake-image\n' if 'images' in argv else b''
++            with patch.object(ci, 'command'), patch('ci_production.subprocess.check_output', side_effect=read):
++                self.assertEqual(ci.finalize(), 1)
++            self.assertFalse(ci.env_file.exists())
++            self.assertFalse(ci.raw.exists())
++            self.assertEqual([p.name for p in ci.artifacts.iterdir()], ['summary.txt'])
++            self.assertNotIn(leaked, (ci.artifacts / 'summary.txt').read_bytes())
++
++
++if __name__ == '__main__':
++    unittest.main()
