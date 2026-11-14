@@ -143,6 +143,19 @@ class CI:
             "from django.db import connection; c=connection.cursor(); c.execute(\"SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname='test_kazan_courts'), has_database_privilege('kazan_test','kazan_courts_dev','CONNECT')\"); assert c.fetchone()==(False,False); print('PASS isolated test DB removed and dev connection denied')"])
         self.record('test-phase', 'PASS')
 
+    def cleanup_local_images(self):
+        # Compose --rmi local can retain tagged build images on some Docker
+        # versions. Remove only tags in our previously unused project namespace;
+        # never force removal or remove a shared base by image ID.
+        output = subprocess.check_output(['docker', 'image', 'ls', '--format',
+            '{{.Repository}}:{{.Tag}}', '--filter', f'reference={self.project}-*'],
+            env=self.env, text=True)
+        refs = sorted(set(output.split()))
+        if any(not ref.startswith(self.project + '-') or '@' in ref for ref in refs):
+            raise ValueError('refusing image outside this CI project')
+        if refs:
+            self.command('cleanup-local-image-tags', ['docker', 'image', 'rm', *refs])
+
     def finalize(self):
         owner = self.state / 'owner.json'
         if not owner.exists() or json.loads(owner.read_text())['project'] != self.project:
@@ -171,13 +184,16 @@ class CI:
             self.record('secret-audit-or-collection', 'FAIL')
         try:
             self.command('cleanup', self.dc + ['down', '--volumes', '--remove-orphans', '--rmi', 'local'], timeout=180)
+            self.cleanup_local_images()
             for kind in ('container', 'volume', 'network'):
                 remaining = subprocess.check_output(['docker', kind, 'ls', '-q', '--filter',
                     f'label=com.docker.compose.project={self.project}'], env=self.env)
                 if remaining.strip():
+                    self.record('cleanup-' + kind + '-remaining-' + str(len(remaining.split())), 'FAIL')
                     raise ValueError('temporary project resource remains')
             if subprocess.check_output(['docker', 'image', 'ls', '-q', '--filter',
                     f'reference={self.project}-*'], env=self.env).strip():
+                self.record('cleanup-image-tags-remain', 'FAIL')
                 raise ValueError('temporary project image remains')
             self.record('cleanup-resources-verified', 'PASS')
         except Exception:

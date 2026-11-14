@@ -41,7 +41,7 @@ jobs:
           suite = unittest.defaultTestLoader.discover('scripts', pattern='test_ci_production.py')
           discovered = suite.countTestCases()
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          complete = discovered >= 12 and result.testsRun == discovered
+          complete = discovered >= 14 and result.testsRun == discovered
           passed = result.wasSuccessful() and not (result.skipped or result.expectedFailures)
           raise SystemExit(0 if complete and passed else 1)
           PY

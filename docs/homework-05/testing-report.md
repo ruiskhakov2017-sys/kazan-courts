@@ -108,3 +108,12 @@ Commit/push/PR/merge/deployment не выполнялись. Итог перед
 Финальный Codex CI run (`cloud-run-b.log`): **PASS**. Машинные результаты и аудированные stdout/stderr находятся в `ci-results/`, включая `django-results.json`, `js-tests.log`, `health-failure-recovery.log`, `secret-audit.log`, `cleanup.log` и `summary.txt`.
 Первый FAIL run оставлен отдельно (`first-run-summary.txt`); не смешан с успешным повтором. `unit.log` содержит ожидаемые строки FAIL внутри негативных сценариев, но unittest-итог **12 tests, OK**.
 `actionlint` официальный checksum проверен; workflow lint — PASS. Сводка не утверждает успешный GitHub Actions run: для GitHub всё ещё Not Run.
+
+## Первый GitHub-hosted запуск и исправление cleanup (14 ноября)
+
+Коммит `92393d86ba8a44ea465608e377f8a3fbf516bafb` отправлен только в feature-ветку, создан PR №19.
+Реальные GitHub-hosted runs: push `43632011774`, PR `43632061403` — **FAIL** на проверке остаточных ресурсов после cleanup. Фазы сборки/отказов/тестов и аудит временных секретов прошли; конечный FAIL не подменяется PASS. Подробные raw-логи по политике удержаны, безопасный artifact summary сохранён.
+
+Добавлено явное удаление только тегов build images с уникальным CI project prefix (без force, без удаления общих base image IDs), а также безопасная диагностика категории оставшихся ресурсов. До удаления namespace проверяется на отсутствие существующих ресурсов. В Codex: 14 gate tests и реальная проверка удаления временного тега с сохранением исходного Kafka image — PASS; actionlint — PASS. Итог повторного hosted run будет указан отдельно в PR; предыдущие строки Not Run относятся к снимку до отправки.
+
+Merge, deployment и работа с действующими данными не выполнялись.

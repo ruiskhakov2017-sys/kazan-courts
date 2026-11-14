@@ -71,6 +71,25 @@ class EvidenceTests(unittest.TestCase):
                     ci.prepare()
             self.assertFalse(ci.state.exists())
 
+    def test_cleanup_removes_only_owned_tags_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-tags'):
+            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
+            refs = 'kc-hw05-ci-tags-web:latest\nkc-hw05-ci-tags-db:latest\n'
+            with patch('ci_production.subprocess.check_output', return_value=refs), patch.object(ci, 'command') as command:
+                ci.cleanup_local_images()
+            argv = command.call_args.args[1]
+            self.assertEqual(argv[:3], ['docker', 'image', 'rm'])
+            self.assertNotIn('--force', argv)
+            self.assertEqual(set(argv[3:]), set(refs.split()))
+
+    def test_cleanup_rejects_foreign_image_even_if_listing_includes_it(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-tags'):
+            ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
+            with patch('ci_production.subprocess.check_output', return_value='postgres:18.6-alpine\n'), patch.object(ci, 'command') as command:
+                with self.assertRaises(ValueError):
+                    ci.cleanup_local_images()
+                command.assert_not_called()
+
     def test_no_owner_never_runs_docker_cleanup(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict('os.environ', COMPOSE_PROJECT_NAME='kc-hw05-ci-test'):
             ci = CI(Path(tmp) / 'state', Path(tmp) / 'results')
@@ -110,7 +129,7 @@ class EvidenceTests(unittest.TestCase):
             leaked = b'POSTGRES_PASSWORD-synthetic-private-value'
             (ci.raw / 'leak.log').write_bytes(leaked)
             def read(argv, **kwargs):
-                return 'fake-image\n' if 'images' in argv else b''
+                return 'fake-image\n' if 'images' in argv else ('' if kwargs.get('text') else b'')
             with patch.object(ci, 'command'), patch('ci_production.subprocess.check_output', side_effect=read):
                 self.assertEqual(ci.finalize(), 1)
             self.assertFalse(ci.env_file.exists())
