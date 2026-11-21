@@ -235,6 +235,9 @@ class BookingEvent(models.Model):
 
 
 class OutboxMessage(models.Model):
+    trace_id = models.CharField(max_length=32, blank=True, default="")
+    correlation_id = models.CharField(max_length=64, blank=True, default="")
+    parent_span_id = models.CharField(max_length=16, blank=True, default="")
     event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     booking_event = models.OneToOneField(BookingEvent, on_delete=models.PROTECT, related_name="outbox_message")
     event_type = models.CharField(max_length=32)

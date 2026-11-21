@@ -1,88 +1,60 @@
-# KazanCourts — Homework 005, этап 1 (P01–P05)
+# KazanCourts — Production Practice P01–P13
 
-Статус: подготовлено к независимому Review, не полная production readiness.
-Источник: [Homework §5](sources/Mentor_Homework_005.md), [roadmap Level 5 A/B/C](sources/ai_native_engineering_roadmap.md).
-Работа относится только к KazanCourts. Центральные документы видеопроекта и статусы обучения не изменяются.
+21 ноября 2026. P01–P05 ранее вошли в main через PR19. P06–P13 реализованы и проверены в Codex в отдельной ветке `feature/hw05-kazancourts-p06-p13`, публикуются по разрешению пользователя от 21 ноября. Статус ниже — технические результаты для независимого Review; он не заменяет приёмку ментора/защиту и не закрывает автоматически CP5.
+Источники: [Homework §5](sources/Mentor_Homework_005.md) и [roadmap](sources/ai_native_engineering_roadmap.md).
 
-## Архитектура и границы
+## Матрица фактического выполнения
 
-`web → PostgreSQL`; `scheduler → PostgreSQL/outbox`; `publisher → Kafka → consumer → PostgreSQL`.
-Существующие правила бронирования, погоды, topic, publisher и consumer сохранены.
-Сервисы `db` и `kafka` не публикуют порты наружу. Web привязан к loopback.
-Одна Compose-сеть на проект; два named volumes для PostgreSQL и Kafka.
-`migrate` — одноразовая задача после готовности БД, перед всеми Django-процессами.
-Мониторинг, structured logs, traces, dashboard относятся к следующим этапам.
-
-## Матрица требований
-
-| ID | Требование | Изменение / доказательство | Результат и граница |
+| ID | Требование | Реализация / доказательство | Codex 21 ноября |
 |---|---|---|---|
-| P01 | Весь локальный сценарий Compose | web, db, kafka, scheduler, publisher, consumer + migrate; чистый старт, restart и регрессии | PASS — см. [фактические проверки](testing-report.md) |
-| P02 | Конфигурация без изменения бизнес-кода | `.env.example`, генератор `.env`; DEBUG, hosts, port, broker, weather; тест runtime override | PASS — см. testing-report |
-| P03 | Секреты вне Git/образа/отчёта | `.env` 0600, уникальные значения; исключение из build context; целевая проверка diff/logs/image layers | PASS — см. testing-report; не аудит всех исторических credentials |
-| P04 | Жизнь процесса | GET/HEAD `/health/live`, 200 даже при остановленных DB/Kafka | PASS — см. testing-report; не проверяет worker progress |
-| P05 | Готовность выполнять работу | GET/HEAD `/health/ready`: SELECT 1 и Kafka cluster metadata; отказ 503 и восстановление 200 | PASS — см. testing-report; не проверяет миграционную схему, lag, доставку, работоспособность workers |
-| P06 | Structured logs | Не начато | Not Run — вне этапа |
-| P07 | Correlation ID | Не начато | Not Run — вне этапа |
-| P08 | Сквозной trace | Не начато | Not Run — вне этапа |
-| P09 | Metrics | Не начато | Not Run — вне этапа |
-| P10 | Dashboard | Не начато | Not Run — вне этапа |
-| P11 | Backup | Не начато | Not Run — [открытый артефакт](backup-restore.md) |
-| P12 | Restore | Не начато | Not Run — [открытый артефакт](backup-restore.md) |
-| P13 | Запуск/обновление/восстановление | Для этапа описан только запуск | Not Run в полном объёме — [operations](operations.md) |
+| P01 | Запуск всего сценария Compose | DB, Kafka, monitoring, migrate, web, scheduler, publisher, consumer; отдельные recovery/upgrade profiles | PASS |
+| P02 | Environment | .env.example, генератор 0600/O_EXCL, порты и telemetry/service settings без бизнес-правок | PASS |
+| P03 | Secrets вне Git/образов/отчётов | Целевой аудит временных значений всех образов/логов; generic signatures собственных образов; приватный dump исключён | PASS в заявленном scope |
+| P04 | Liveness | Процесс отвечает при остановке DB/Kafka | PASS |
+| P05 | Readiness | DB + Kafka, ready200→503→200 | PASS |
+| P06 | Structured logs | JSON Python LogRecords, timestamp/level/service/event/error/trace context; реальные образцы в evidence | PASS |
+| P07 | Correlation ID | HTTP response ID → сохранённый Outbox context → Kafka headers → consumer | PASS |
+| P08 | Сквозная трасса | 5 связанных этапов с parent IDs и длительностями, реальные HTTP/PostgreSQL/Kafka/workers | PASS |
+| P09 | Metrics | Counters/duration sum по bounded labels, рост после success и HTTP404 | PASS |
+| P10 | Dashboard | Живая таблица + выбор traces, Prometheus text; browser rendering/screenshot | PASS |
+| P11 | PostgreSQL backup | Реальный custom pg_dump18.6, checksum/размер/версия/контрольные данные | PASS |
+| P12 | PostgreSQL restore | Чистая другая БД; совпали public rows/sequences; приложение читает/пишет, возобновлена незавершённая обработка | PASS |
+| P13 | Запуск/обновление/восстановление | Три runbook-сценария; обновление реального P01 приложения/0006 до нового образа/0007, сохранение брони; отдельный recovery stack | PASS в локальном учебном сценарии |
 
-## Environment
+Доказательства: [testing-report](testing-report.md), [observability](observability.md), [backup/restore](backup-restore.md), [operations](operations.md).
+Скрипты воспроизведения: `ci_production.py`, `check_full_production.py`, guarded management commands `production_evidence` / `reconcile_restored_outbox`.
 
-Compose читает `.env` из корня. На хосте Django сам `.env` не читает.
-Переменные shell имеют приоритет над `.env`; не выводить `docker compose config` без `--quiet`.
+## Компоненты и постоянные данные
 
-| Переменная | Назначение / безопасный пример |
+HTTP → Django/PostgreSQL; scheduler → weather transitions/Outbox; publisher → Kafka → consumer/PostgreSQL.
+Дополнительный monitoring принимает безопасные spans, хранит telemetry SQLite в отдельном диагностическом volume и показывает dashboard. SQLite не заменяет PostgreSQL для бизнеса.
+PostgreSQL Alpine использует отдельный `compose_postgres_alpine_data`; старый Debian volume не подключается. Recovery и upgrade используют **свои** DB volumes; recovery также свой свежий Kafka.
+Monitoring/HTTP публикуются только на loopback; DB/Kafka не публикуются на хост. При отказе collector бизнес-операции не блокируются telemetry exception; доставку диагностических данных не гарантируем.
+
+## Настройки и секреты
+
+`.env` читает Compose, прямой Django сам его не загружает. Shell overrides имеют приоритет; не выводить полный config/inspect/environment в отчёт.
+
+| Переменная | Назначение |
 |---|---|
-| POSTGRES_PASSWORD | Bootstrap/admin пароль локальной БД, генерируется |
-| DEV_DB_PASSWORD | Пароль роли kazan_dev, генерируется |
-| TEST_DB_PASSWORD | Пароль отдельной роли kazan_test, генерируется |
-| DJANGO_SECRET_KEY | Django signing key, генерируется |
-| DJANGO_DEBUG | `1` для локального запуска, `0` для проверки отключения debug |
-| DJANGO_ALLOWED_HOSTS | `localhost,127.0.0.1`; список через запятую |
-| KAZAN_HTTP_PORT | Порт loopback хоста; `8000`, в Review `18005` |
-| KAFKA_BOOTSTRAP_SERVERS | Внутри Compose `kafka:9092`; адрес должен быть доступен всем Django-процессам |
-| WEATHER_NETWORK_ENABLED | `0`; реальные запросы не разрешены в этом этапе |
-| DB_HOST/DB_PORT | Compose задаёт `db`/`5432`; прямому запуску задавать явно |
-| DB_NAME/DB_USER/DB_PASSWORD | Compose задаёт development DB/роль/пароль; для тестов только postgres/kazan_test/TEST_DB_PASSWORD |
-| COMPOSE_PROJECT_NAME / `-p` | Пространство имён сети, контейнеров, томов; отдельное для каждого теста |
+| POSTGRES_PASSWORD / DEV_DB_PASSWORD / TEST_DB_PASSWORD | Уникальные bootstrap/dev/test passwords; генератор не перезаписывает существующий файл |
+| DJANGO_SECRET_KEY | Уникальный signing key, приватная конфигурация |
+| DJANGO_DEBUG / DJANGO_ALLOWED_HOSTS | Локальный debug и допустимые hosts |
+| DB_HOST/PORT/NAME/USER/PASSWORD | Compose назначает DB/роль; CI tests только postgres/kazan_test; recovery только restore-db |
+| KAFKA_BOOTSTRAP_SERVERS | Локальный kafka:9092; recovery restore-kafka:9092 |
+| WEATHER_NETWORK_ENABLED | 0; реальные погодные запросы не выполнялись |
+| KAZAN_HTTP_PORT | Основной web, default8000; CI18005 |
+| KAZAN_MONITOR_PORT | Dashboard, default19006 |
+| KAZAN_RESTORE_PORT / KAZAN_UPGRADE_PORT | Recovery18016 / проверка upgrade18017 |
+| TELEMETRY_ENDPOINT | Внутренний collector; прямой Django без настройки не отправляет spans |
+| KAZAN_SERVICE | Имя компонента, задаёт Compose |
+| KAZAN_RECOVERY_MODE | Только recovery stack, разрешает guarded reconciliation |
+| KAZAN_VERIFICATION_ALLOWED | Только явные synthetic evidence commands; не пользовательская функция |
 
-Имена DB/ролей закреплены текущим init-скриптом; изменение этих имён не заявлено.
-Пароли задаются при первом создании volume; замена `.env` не меняет пароли существующей БД.
-Генератор отказывается перезаписывать `.env`. Значения GENERATE_LOCALLY в шаблоне — placeholders, не готовая конфигурация.
+Secrets передаются через environment: администратор хоста/Docker может их видеть. Это не secret manager. Dump содержит приватные DB/session/auth данные, не включён в Git или публичный пакет. Generic signature audit unchanged upstream Kafka имеет явную границу GnuTLS fixtures; поиск всех временных CI-значений в нём сохраняется, как описано в [предыдущем CI review](ci-review.md).
 
-## Secrets и build
+## Границы готовности
 
-Выбран прежний способ передачи через environment; файл не попадает в Git или образ.
-Это не secret manager: администратор Docker/хоста видит environment процесса. Не публиковать `inspect`, полный Compose config, `.env` и dumps.
-Образ копирует только код/шаблоны/static, PostgreSQL-образ на официальной базе postgres:18.6-alpine — только init-скрипт. Debian-база заменена после обнаружения стандартного snakeoil private key в её слоях; перенос существующей Debian-БД на Alpine не выполнялся и требует отдельного плана. Приложение работает под UID 10001.
-Для cloud proxy поддержан необязательный BuildKit secret `cloud_ca`; CA подключается только на шаге pip, TLS-проверка сохраняется.
-Это публичный сертификат доверия, не credential. На обычном Docker build secret не нужен.
-
-## Health/readiness policy
-
-Liveness не обращается к зависимостям, не требует входа; оба endpoint не кешируются и не принимают запись.
-Readiness отвечает `{"status":"ready","checks":{"postgres":true,"kafka":true}}` либо 503 с булевыми состояниями.
-Имена хостов, исключения, пароли в ответ не включаются. Kafka проверяется чтением metadata без создания сообщений.
-Настроены connect timeout PostgreSQL 2s и Kafka bootstrap/request timeout 1.5s.
-Это не общий deadline запроса: зависшая уже открытая SQL-сессия или DNS может потребовать отдельной политики.
-Для локальной системы Kafka обязательна как часть полного фонового сценария. При её отказе web жив, бронирования по прежней логике могут сохраняться в outbox.
-Readiness — сигнал оператору/будущему роутеру, не автоматический запрет API. Docker healthcheck использует liveness; он не доказывает автоматический restart unhealthy контейнера.
-
-## Roadmap и решения
-
-Этап даёт технические доказательства для A01–A04 (image/volume/network/Compose), A09–A11 (environment/secrets/migrations), C07 (health/readiness), B01/B03 (локальная сборка/тесты).
-Он не закрывает весь Track A/B/C, CI/CD, deployment, TLS, rollback или понимание пользователя.
-Автоматические миграции здесь выбраны для воспроизводимого локального стенда; план production-миграций и rollback остаётся P13.
-Собственный design/выбор пользователя и защита не реконструируются задним числом. Это реализация агента в рамках прямого поручения и материал для Review.
-
-
-## Дополнение повторного Review (14 ноября)
-
-Первоначальная реализация независимо проверена; открытые вопросы CI и PostgreSQL рассмотрены в [ci-review](ci-review.md) и [volume review](postgresql-volume-review.md).
-Для новых Alpine-стендов Compose использует `compose_postgres_alpine_data`, сохраняя старый Debian-volume отдельно. Автоматический перенос данных не выполняется.
-Подготовлен hosted CI P01–P05; Codex и GitHub доказательства разделены в testing-report. Это не начало P06–P13, не новый observability/CI-CD deployment этап и не заявление об успешном Actions run.
+Текущий статус публикации и фактические результаты GitHub Actions находятся в [acceptance](acceptance.md). Прежний hosted PASS относился к P01–P05 и 221 тесту, не ко всему новому этапу.
+Нет внешнего deployment, HA, alerts, полной security certification или гарантии RPO/RTO. Не проверены реальный погодный provider, перенос Debian→Alpine существующих данных, zero-downtime/rolling update и автоматический rollback данных. Runserver сохранён для локального сценария.
+Теория A/B/C и способность пользователя объяснить решения оцениваются отдельно. VidHarbor не изменялся и его статусы не подтверждаются этим отчётом.

@@ -1,3 +1,7 @@
+# Актуальный статус
+
+Итог публикации и GitHub Actions: [acceptance.md](acceptance.md). Ниже сохранены датированные снимки подготовки и проверок; строки Not Run/без commit относятся к моменту этих снимков.
+
 # KazanCourts P01–P05 — фактические проверки
 
 Дата: 13 ноября 2026, Europe/Moscow. Первоначальный независимый Review пройден с двумя открытыми вопросами (сообщение пользователя 14 ноября); повторный Review изменений CI/volume ещё не выполнен.
@@ -117,3 +121,55 @@ Commit/push/PR/merge/deployment не выполнялись. Итог перед
 Добавлено явное удаление только тегов build images с уникальным CI project prefix (без force, без удаления общих base image IDs), а также безопасная диагностика категории оставшихся ресурсов. До удаления namespace проверяется на отсутствие существующих ресурсов. В Codex: 14 gate tests и реальная проверка удаления временного тега с сохранением исходного Kafka image — PASS; actionlint — PASS. Итог повторного hosted run будет указан отдельно в PR; предыдущие строки Not Run относятся к снимку до отправки.
 
 Merge, deployment и работа с действующими данными не выполнялись.
+
+# Этап P06–P13 — 21 ноября 2026
+
+Новая локальная ветка `feature/hw05-kazancourts-p06-p13`, база main `ef412f7c87c694512eb365f2a31439a46656aebc`. Ни commit, ни push, ни PR/deployment этого этапа не выполнялись. Ниже — **новые результаты Codex**. Предыдущие результаты GitHub Actions относятся к другой версии P01–P05.
+
+| Проверка | Фактический результат | Файл в Review evidence |
+|---|---|---|
+| Полный холодный Compose + monitoring, миграции/модели | PASS | summary.txt/build.log/start.log/model-drift.log |
+| P01–P05 и новые unit observability | PASS: 228 Django tests, 0 failures/errors/skips/expected failures/unexpected successes, реальные Kafka tests | django-results.json/django-tests.log |
+| JavaScript | PASS: 4/4, 0 skip/cancelled/todo | js-tests.log |
+| CI safety gates | PASS: 14 тестов, включая отрицательные случаи | gates.log |
+| JSON logs | PASS: actual Django/worker JSON records с timestamp/level/service/event/error/context | service-logs.log/full-http-web.log |
+| HTTP→Outbox→Kafka→notification trace | PASS: 5 связанных этапов, общие trace/correlation IDs, проверены все parent edges, отдельные publisher/consumer services | full-trace.json |
+| Метрики | PASS: count увеличивается, HTTP404 добавляет error; durations/Prometheus endpoint проверены | full-metrics.json/p06-p13.log |
+| Dashboard | PASS в Chromium: 19 строк метрик, полная трасса, JS errors=[] | dashboard.png/browser-proof.json |
+| Backup | PASS: pg_dump18.6, format custom PGDMP, 53805 bytes | full-backup-restore.json/full-dump-version.log/full-server-version.log |
+| Restore | PASS: новая restore-db первоначально0 tables; pg_restore exit0; полный content+sequences hash совпал | full-restore-empty.log/full-pg-restore.log/full-restored-manifest.log |
+| Возобновление незавершённой работы | PASS: broker ack до backup, notification отсутствовала; reconcile1 → новые Kafka/workers → 2 simulated notifications; повтор reconcile0 | full-reconcile.log/full-reconcile-idempotent.log/full-outcomes-restore-web.log |
+| Проверка источника | PASS: reconcile отказан для исходного db даже с recovery flag | full-source-reconcile-refused.log |
+| Восстановленное приложение | PASS: readiness200, чтение контрольной брони, новая indoor booking+history через настоящий HTTP201 | full-read-restore-web.log |
+| Обновление версии/схемы | PASS: старое приложение ef412f7/0006 создало контрольную бронь; новая версия/0007 читает её и создаёт новую, ready200 | full-upgrade.json/full-previous-data.log/full-upgrade-migrate.log/full-read-upgrade-web.log |
+| Secrets и cleanup | PASS: образ/история/слои + raw logs в заявленном scope; новые containers/volumes/network/build tags удалены; private env/raw/dump CI удалены | secret-audit.log/cleanup.log/summary.txt |
+| GitHub Actions для P06–P13 | **Not Run**, workflow только подготовлен | нет нового hosted run URL |
+
+Фактическая трасса: `b899d1dee31a44a09920ff1aedb67611`, correlation `evidence-e2e8841c4675d153`.
+SHA256 dump: `57e1b443868b6c6467ee7d8d683d23f228df1472cfd26b093301d61408751db9`.
+Fingerprint public rows и public sequences до/после restore: `b0cbb2854597a249f11513a7a200fbf02ce43b809b2d8a1c7b079eabd05cde37`.
+Версия сервера: PostgreSQL18.6, x86_64 Linux/musl. Образы приложения/source target IDs записаны в full-upgrade.json.
+
+## Команды воспроизведения
+
+На свежем project CI helper создаёт собственный private runtime.env и ownership marker. Существующие ресурсы отвергаются.
+
+```bash
+export COMPOSE_PROJECT_NAME=kc-hw05-ci-your-unique-id
+python3 scripts/ci_production.py prepare --state-dir /tmp/kazan-private --artifacts /tmp/kazan-safe
+python3 scripts/ci_production.py run --state-dir /tmp/kazan-private --artifacts /tmp/kazan-safe
+# Выполнять finalize даже при неуспешном run, сохраняя его исходный exit status:
+python3 scripts/ci_production.py finalize --state-dir /tmp/kazan-private --artifacts /tmp/kazan-safe
+```
+
+Codex-прогон дополнительно использовал public CA build secret через session-only Compose override для нормальных/recovery/upgrade app images; TLS-проверка не отключалась. Ранний P01 commit для настоящей проверки обновления извлекается git archive; workflow теперь fetch-depth0. Synthetic weather fixture подменяет только адаптер в реальном WSGI instance; сетевой HTTP, PostgreSQL и Kafka настоящие. Session для synthetic employee создаётся test harness, пользовательские пароли не запрашиваются/не печатаются.
+
+## Первый неуспешный запуск
+
+`run-a.log`: Django/JS прошли, но P06–P13 proof получил **FAIL** на ожидании notification. Причина: изолированные Kafka poison/redelivery tests оставили тестовый topic, consumer сценария встретил его записи. Сценарии разделены: в новом, ownership-checked CI broker после регрессий очищается только тестовый topic перед созданием demo Outbox; рабочие brokers не трогаются. Исправленный полный `run-b.log`: prepare=0/run=0/finalize=0. Первый FAIL не обозначается успешным.
+
+## Ограничения и статус Review
+
+Все перечисленные операции выполнялись только на новых тестовых ресурсах. Существующие Debian/Alpine volumes, действующие данные и VidHarbor не изменялись. Private synthetic dump сохранён локально вне Git; публичный ZIP содержит только checksum/metadata и безопасные результаты.
+Обновление проверено старым app image/0006 → новым image/0007 в отдельной DB, с CLI и реальным HTTP на новой версии. Rolling update/работа старых writers на новой схеме/автоматический rollback не проверялись; runbook требует остановки writers и согласованного восстановления.
+Collector best-effort, telemetry может теряться при отказе. Не заявляется полная production readiness, приёмка ментора или завершение теории. Технические результаты P06–P13 подготовлены для независимого Review.

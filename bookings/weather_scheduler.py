@@ -1,5 +1,6 @@
 """One automatic check. The caller may schedule it hourly later."""
 
+from config.telemetry import observed
 from django.db import connection
 from django.utils import timezone
 
@@ -13,6 +14,7 @@ from .weather_transitions import apply_weather_transition
 LOCK_KEY = 0x4B43574541544852
 
 
+@observed("weather.cycle")
 def run_weather_check():
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_try_advisory_lock(%s)", [LOCK_KEY])

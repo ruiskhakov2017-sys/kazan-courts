@@ -26,6 +26,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "config.telemetry.TraceMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -81,3 +82,14 @@ LOGIN_REDIRECT_URL = "home"
 LOGOUT_REDIRECT_URL = "login"
 STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
+
+
+LOGGING = {
+    "version": 1, "disable_existing_loggers": False,
+    "formatters": {"json": {"()": "config.telemetry.JSONFormatter"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "json", "stream": "ext://sys.stdout"}},
+    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {"django": {"handlers": ["console"], "level": "INFO", "propagate": False},
+                "django.server": {"handlers": ["console"], "level": "INFO", "propagate": False},
+                "kafka": {"handlers": ["console"], "level": "WARNING", "propagate": False}},
+}

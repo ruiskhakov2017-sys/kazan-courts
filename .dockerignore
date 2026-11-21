@@ -16,3 +16,7 @@ venv
 **/*.pem
 **/*.key
 **/*.clixml
+**/*.dump
+**/*.sql.gz
+backups
+private-backups

@@ -58,9 +58,9 @@ class CI:
         self.env = os.environ.copy()
         # All runtime settings come from the generated CI file, not host bindings.
         for name in SECRET_NAMES | {'KAFKA_BOOTSTRAP_SERVERS', 'WEATHER_NETWORK_ENABLED',
-                                    'DJANGO_DEBUG', 'DJANGO_ALLOWED_HOSTS', 'KAZAN_HTTP_PORT'}:
+                                    'DJANGO_DEBUG', 'DJANGO_ALLOWED_HOSTS', 'KAZAN_HTTP_PORT', 'KAZAN_MONITOR_PORT', 'KAZAN_RESTORE_PORT', 'KAZAN_UPGRADE_PORT'}:
             self.env.pop(name, None)
-        self.env.update(KAZAN_HTTP_PORT='18005', WEATHER_NETWORK_ENABLED='0',
+        self.env.update(KAZAN_HTTP_PORT='18005', KAZAN_MONITOR_PORT='19006', KAZAN_RESTORE_PORT='18016', KAZAN_UPGRADE_PORT='18017', WEATHER_NETWORK_ENABLED='0',
                         KAFKA_BOOTSTRAP_SERVERS='kafka:9092')
         self.dc = ['docker', 'compose', '-p', self.project, '--env-file', str(self.env_file)]
 
@@ -110,7 +110,7 @@ class CI:
             states = [json.loads(line) for line in items.splitlines() if line.strip()]
         by_name = {row['Service']: row for row in states}
         if any(by_name.get(name, {}).get('State') != 'running' for name in
-               ('web', 'db', 'kafka', 'scheduler', 'publisher', 'consumer')):
+               ('web', 'db', 'kafka', 'scheduler', 'publisher', 'consumer', 'monitoring')):
             raise ValueError('required Compose service is missing/stopped')
         if by_name.get('migrate', {}).get('ExitCode') != 0:
             raise ValueError('migration job did not complete successfully')
@@ -131,7 +131,7 @@ class CI:
         env['DB_PASSWORD'] = bindings['TEST_DB_PASSWORD']
         self.command('django-tests', self.dc + ['exec', '-T', '-e', 'DB_NAME=postgres', '-e', 'DB_USER=kazan_test',
             '-e', 'DB_PASSWORD', '-e', 'KAFKA_INTEGRATION=1', '-e', 'KAZAN_TEST_RESULTS=/tmp/ci-tests.json',
-            'web', 'python', 'manage.py', 'test', 'test_database', 'bookings', 'config.test_health',
+            'web', 'python', 'manage.py', 'test', 'test_database', 'bookings', 'config.test_health', 'config.test_observability',
             '--testrunner=config.ci_runner.CIResultRunner', '--verbosity', '2', '--noinput'], env=env)
         self.command('collect-django-results', self.dc + ['cp', 'web:/tmp/ci-tests.json', str(self.raw / 'django-results.json')])
         validate_django(json.loads((self.raw / 'django-results.json').read_text()))
@@ -141,6 +141,8 @@ class CI:
         self.record('javascript-counts-no-skips', 'PASS')
         self.command('post-tests-db', self.dc + ['exec', '-T', 'web', 'python', 'manage.py', 'shell', '-c',
             "from django.db import connection; c=connection.cursor(); c.execute(\"SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname='test_kazan_courts'), has_database_privilege('kazan_test','kazan_courts_dev','CONNECT')\"); assert c.fetchone()==(False,False); print('PASS isolated test DB removed and dev connection denied')"])
+        self.command('p06-p13', [sys.executable, 'scripts/check_full_production.py',
+            '--state-dir', str(self.state), '--artifacts', str(self.artifacts)], timeout=1500)
         self.record('test-phase', 'PASS')
 
     def cleanup_local_images(self):
@@ -164,8 +166,9 @@ class CI:
         failed = False
         try:
             self.command('service-logs', self.dc + ['logs', '--no-color', '--tail', '300'])
-            image_text = subprocess.check_output(self.dc + ['images', '-q'], cwd=ROOT, env=self.env, text=True)
-            images = sorted(set(image_text.split()))
+            image_text = subprocess.check_output(self.dc + ['--profile','recovery','--profile','verification','images', '-q'], cwd=ROOT, env=self.env, text=True)
+            extra = subprocess.check_output(['docker','image','ls','-q','--filter',f'reference={self.project}-*'],env=self.env,text=True)
+            images = sorted(set(image_text.split()+extra.split()))
             if not images:
                 raise ValueError('no images available for leak audit')
             argv = [sys.executable, 'scripts/audit_local_secrets.py', '--env-file', str(self.env_file), '--logs', str(self.raw)]
@@ -183,7 +186,7 @@ class CI:
             failed = True
             self.record('secret-audit-or-collection', 'FAIL')
         try:
-            self.command('cleanup', self.dc + ['down', '--volumes', '--remove-orphans', '--rmi', 'local'], timeout=180)
+            self.command('cleanup', self.dc + ['--profile','recovery','--profile','verification','down', '--volumes', '--remove-orphans', '--rmi', 'local'], timeout=180)
             self.cleanup_local_images()
             for kind in ('container', 'volume', 'network'):
                 remaining = subprocess.check_output(['docker', kind, 'ls', '-q', '--filter',
@@ -225,6 +228,7 @@ class CI:
             self.record('finalization', 'PASS')
         self.env_file.unlink(missing_ok=True)
         shutil.rmtree(self.raw, ignore_errors=True)
+        shutil.rmtree(self.state/'backup', ignore_errors=True)
         return int(failed)
 
 

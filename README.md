@@ -518,3 +518,14 @@ P06–P13, production deployment, полное обновление/восста
 [Подготовленный облачный CI и статус повторного Review](docs/homework-05/ci-review.md).
 [Риск Debian → Alpine и раздельные volumes](docs/homework-05/postgresql-volume-review.md).
 Новое имя Alpine-volume защищает старые Debian-данные от автоматического подключения. Сам перенос данных не выполнен.
+
+## Homework 005 — P06–P13 (реализовано для Review)
+
+[Актуальная матрица P01–P13](docs/homework-05/production-practice.md),
+[наблюдение: logs/correlation/trace/metrics/dashboard](docs/homework-05/observability.md),
+[проверенный backup/restore](docs/homework-05/backup-restore.md),
+[запуск, обновление и восстановление](docs/homework-05/operations.md),
+[фактические результаты Codex и границы](docs/homework-05/testing-report.md).
+
+Monitoring доступен на loopback19006; recovery web18016, verification upgrade18017 (порты настраиваются).
+Новая версия проверена в Codex: 228 Django + 4 JS, реальные HTTP/Kafka spans, отдельный restore и update. Актуальные результаты GitHub Actions и публикации: [итоговая проверка P01–P13](docs/homework-05/acceptance.md).
