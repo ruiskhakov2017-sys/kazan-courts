@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+from config.telemetry import span, observed, incoming, headers, from_headers
 
 from django.db import connection, transaction
 from django.db.models import F
@@ -81,6 +82,14 @@ def _record_publisher_failure(message, code):
     logger.warning("Outbox delivery failed; pending message %s: %s", message.pk, code)
 
 
+def _send_observed(producer, message, key, payload):
+    parent = incoming()
+    if message.trace_id:
+        parent = incoming(f"00-{message.trace_id}-{message.parent_span_id}-01", message.correlation_id)
+    with span("kafka.publish", parent):
+        producer.send(TOPIC, key=key, value=payload, headers=headers()).get(timeout=10)
+
+
 def publish_pending(producer_factory=None):
     """Single publisher, ordered by outbox id. Stop on the first failure."""
     with connection.cursor() as cursor:
@@ -102,7 +111,7 @@ def publish_pending(producer_factory=None):
                     producer = factory(bootstrap_servers=kafka_address(), acks="all", retries=0,
                                        request_timeout_ms=5000, max_block_ms=5000)
                 # send() only queues locally: get() waits for the broker acknowledgement.
-                producer.send(TOPIC, key=key, value=payload).get(timeout=10)
+                _send_observed(producer, message, key, payload)
             except (KafkaError, OSError, TimeoutError):
                 _record_publisher_failure(message, "kafka_unavailable")
                 break
@@ -122,6 +131,7 @@ def publish_pending(producer_factory=None):
     return count
 
 
+@observed("notification.persist")
 @transaction.atomic
 def process_notification(value, key):
     """Validate persisted event, lock the booking, then persist one result."""
@@ -152,9 +162,10 @@ def process_notification(value, key):
 
 
 def consume_one(consumer, record):
-    process_notification(record.value, record.key)
-    # Exact offset for this record; never commit prefetched, unprocessed records.
-    consumer.commit({TopicPartition(record.topic, record.partition): OffsetAndMetadata(record.offset + 1, "")})
+    with span("kafka.consume", from_headers(getattr(record, "headers", []))):
+        process_notification(record.value, record.key)
+        # Preserve acknowledgement after the committed DB operation.
+        consumer.commit({TopicPartition(record.topic, record.partition): OffsetAndMetadata(record.offset + 1, "")})
 
 
 def new_consumer():

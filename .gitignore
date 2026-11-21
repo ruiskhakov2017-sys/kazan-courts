@@ -16,3 +16,9 @@ venv/
 *.key
 
 !.env.example
+
+# Database copies and private recovery material
+*.dump
+*.sql.gz
+backups/
+private-backups/

@@ -1,6 +1,7 @@
 """Atomic building blocks for future automated weather processing."""
 
 import uuid
+from config.telemetry import observed, trace_fields
 
 from django.db import transaction
 from django.utils import timezone
@@ -9,6 +10,7 @@ from .models import Booking, BookingEvent, OutboxMessage
 from .services import BookingOperationError, _employee, booking_snapshot
 
 
+@observed("weather.transition")
 @transaction.atomic
 def apply_weather_transition(*, booking_id, expected_starts_at, expected_ends_at, status, checked_at):
     if status not in (Booking.WeatherStatus.CLEAR, Booking.WeatherStatus.BLOCKED):
@@ -45,7 +47,7 @@ def apply_weather_transition(*, booking_id, expected_starts_at, expected_ends_at
     event_id = uuid.uuid4()
     event_type = "booking.weather_blocked" if status == "blocked" else "booking.weather_cleared"
     message = OutboxMessage.objects.create(
-        event_id=event_id, booking_event=event, event_type=event_type, schema_version=1,
+        **trace_fields(), event_id=event_id, booking_event=event, event_type=event_type, schema_version=1,
         payload={"event_id": str(event_id), "event_type": event_type, "schema_version": 1,
                  "booking_id": booking.pk, "court_id": booking.court_id, "occurred_at": checked_at.isoformat(),
                  "episode_id": event.pk if status == "blocked" else episode.pk if episode else None},

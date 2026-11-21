@@ -19,7 +19,7 @@ jobs:
     name: django-check
     # GitHub-hosted only: no self-hosted, workstation or external service.
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 55
     env:
       COMPOSE_PROJECT_NAME: kc-hw05-ci-${{ github.run_id }}-${{ github.run_attempt }}
       WEATHER_NETWORK_ENABLED: "0"
@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
@@ -53,9 +54,9 @@ jobs:
           --state-dir "$RUNNER_TEMP/kazan-private"
           --artifacts "$RUNNER_TEMP/kazan-safe-results"
 
-      - name: Build, run, fail dependencies and test P01-P05
+      - name: Build, run, fail dependencies and test P01-P13
         id: tests
-        timeout-minutes: 23
+        timeout-minutes: 38
         run: >-
           python3 scripts/ci_production.py run
           --state-dir "$RUNNER_TEMP/kazan-private"
@@ -88,7 +89,7 @@ jobs:
           with (destination / 'summary.txt').open('a') as output:
               output.write(f'{status} overall CI\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
-              output.write('### KazanCourts P01-P05: ' + status + '\n\n')
+              output.write('### KazanCourts P01-P13: ' + status + '\n\n')
               output.write('```text\n' + (destination / 'summary.txt').read_text() + '```\n')
           print(status + ' overall CI')
           raise SystemExit(0 if passed else 1)
@@ -98,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: kazancourts-p01-p05-${{ github.run_id }}-${{ github.run_attempt }}
+          name: kazancourts-p01-p13-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kazan-safe-results/
           if-no-files-found: error
           retention-days: 14

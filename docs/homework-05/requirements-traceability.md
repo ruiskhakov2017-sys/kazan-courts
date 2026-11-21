@@ -13,3 +13,18 @@
 
 [Оригинал Homework](sources/Mentor_Homework_005.md) и [roadmap](sources/ai_native_engineering_roadmap.md) сохранены из присланного архива без редакторских изменений.
 Итоговая защита и независимый Review ещё не проведены.
+
+## P06–P13: реализация и новые доказательства (21 ноября)
+
+| Требование | Реализация | Проверка / результат Codex |
+|---|---|---|
+| P06 | config/telemetry.JSONFormatter + settings LOGGING | JSON actual request/worker records, secret text exclusion — PASS |
+| P07 | TraceMiddleware, Outbox trace fields, migration0007, Kafka headers | parent/correlation durability до consumer — PASS |
+| P08 | spans вокруг HTTP/transition/publish/consume/DB notification | 5 фактических parent-linked spans с длительностями — PASS |
+| P09 | telemetry_server SQLite aggregates + Prometheus export | рост success/error и duration counters — PASS |
+| P10 | Compose monitoring dashboard | real Chromium dynamic metrics/trace screenshot — PASS |
+| P11 | check_full_production pg_dump custom | реальный private dump + версия/размер/SHA — PASS |
+| P12 | restore-db + restore-web, guarded reconciliation | rows/sequences match, notification recovery, API read/write — PASS |
+| P13 | operations.md и реальные recovery/upgrade profiles | три сценария, baseline0006→0007 и отдельный restore stack — PASS |
+
+Новая версия GitHub Actions: Not Run. Текущая [матрица](production-practice.md) и новый раздел testing-report имеют приоритет над историческими строками «вне этапа P01–P05». Теория/mentорская приёмка отдельно, статусы VidHarbor не меняются.
