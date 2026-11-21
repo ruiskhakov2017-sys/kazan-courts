@@ -1,0 +1,59 @@
+{
+  "format": "PostgreSQL custom",
+  "sha256": "57e1b443868b6c6467ee7d8d683d23f228df1472cfd26b093301d61408751db9",
+  "bytes": 53805,
+  "source": {
+    "counts": {
+      "auth_group": 0,
+      "auth_group_permissions": 0,
+      "auth_permission": 48,
+      "auth_user": 1,
+      "auth_user_groups": 0,
+      "auth_user_user_permissions": 0,
+      "bookings_booking": 1,
+      "bookings_bookingevent": 3,
+      "bookings_court": 8,
+      "bookings_customer": 4,
+      "bookings_outboxmessage": 2,
+      "bookings_simulatednotification": 1,
+      "bookings_weatherintegrationstatus": 0,
+      "django_content_type": 12,
+      "django_migrations": 22,
+      "django_session": 1
+    },
+    "database": "kazan_courts_dev",
+    "sha256": "b0cbb2854597a249f11513a7a200fbf02ce43b809b2d8a1c7b079eabd05cde37"
+  },
+  "control": {
+    "booking_id": 1,
+    "correlation_id": "evidence-e2e8841c4675d153",
+    "event_id": "cfc2a36c-daaa-44ca-9509-618bab283598",
+    "trace_id": "b899d1dee31a44a09920ff1aedb67611"
+  },
+  "unfinished_event": "c055cbb7-be68-4e54-9939-44f6a0c8c57e",
+  "pg_dump_version": "pg_dump (PostgreSQL) 18.6",
+  "server_version": "PostgreSQL 18.6 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "restored": {
+    "counts": {
+      "auth_group": 0,
+      "auth_group_permissions": 0,
+      "auth_permission": 48,
+      "auth_user": 1,
+      "auth_user_groups": 0,
+      "auth_user_user_permissions": 0,
+      "bookings_booking": 1,
+      "bookings_bookingevent": 3,
+      "bookings_court": 8,
+      "bookings_customer": 4,
+      "bookings_outboxmessage": 2,
+      "bookings_simulatednotification": 1,
+      "bookings_weatherintegrationstatus": 0,
+      "django_content_type": 12,
+      "django_migrations": 22,
+      "django_session": 1
+    },
+    "database": "kazan_courts_dev",
+    "sha256": "b0cbb2854597a249f11513a7a200fbf02ce43b809b2d8a1c7b079eabd05cde37"
+  },
+  "recovery": "PASS: requeued unfinished acknowledged event, read and new booking HTTP201"
+}

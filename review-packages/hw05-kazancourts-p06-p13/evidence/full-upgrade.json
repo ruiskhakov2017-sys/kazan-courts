@@ -1,0 +1,10 @@
+{
+  "source_app": "ef412f7c87c694512eb365f2a31439a46656aebc",
+  "from_schema": "0006",
+  "to_schema": "0007",
+  "control_booking": 1,
+  "target_image": "9472fc8650a43757937b864693b0664c7ad9d75424dd2cff63ee3bdc3713b8a3",
+  "source_image": "sha256:6d06c96feff32396380a28f7d183a0a9adbd1b5e77b67ca769a18efabbfb3d66",
+  "read_and_new_booking": "PASS",
+  "readiness": "200"
+}

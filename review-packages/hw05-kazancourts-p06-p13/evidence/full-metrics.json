@@ -1,0 +1,123 @@
+{
+  "metrics": [
+    {
+      "service": "consumer",
+      "event": "kafka.consume",
+      "outcome": "success",
+      "count": 1,
+      "duration": 0.052067999999999996
+    },
+    {
+      "service": "consumer",
+      "event": "notification.persist",
+      "outcome": "success",
+      "count": 1,
+      "duration": 0.029876
+    },
+    {
+      "service": "publisher",
+      "event": "kafka.publish",
+      "outcome": "success",
+      "count": 1,
+      "duration": 0.11225700000000001
+    },
+    {
+      "service": "web",
+      "event": "http.request",
+      "outcome": "error",
+      "count": 256,
+      "duration": 5.819793999999997
+    },
+    {
+      "service": "web",
+      "event": "http.request",
+      "outcome": "success",
+      "count": 137,
+      "duration": 2.743624000000001
+    },
+    {
+      "service": "web",
+      "event": "kafka.consume",
+      "outcome": "error",
+      "count": 3,
+      "duration": 0.027853
+    },
+    {
+      "service": "web",
+      "event": "kafka.consume",
+      "outcome": "success",
+      "count": 2,
+      "duration": 0.069882
+    },
+    {
+      "service": "web",
+      "event": "kafka.publish",
+      "outcome": "error",
+      "count": 1,
+      "duration": 6.4e-05
+    },
+    {
+      "service": "web",
+      "event": "kafka.publish",
+      "outcome": "success",
+      "count": 7,
+      "duration": 0.25498100000000007
+    },
+    {
+      "service": "web",
+      "event": "notification.persist",
+      "outcome": "error",
+      "count": 4,
+      "duration": 0.010956
+    },
+    {
+      "service": "web",
+      "event": "notification.persist",
+      "outcome": "success",
+      "count": 20,
+      "duration": 0.22666299999999995
+    },
+    {
+      "service": "web",
+      "event": "weather.cycle",
+      "outcome": "error",
+      "count": 2,
+      "duration": 0.033448
+    },
+    {
+      "service": "web",
+      "event": "weather.cycle",
+      "outcome": "success",
+      "count": 14,
+      "duration": 0.19265299999999996
+    },
+    {
+      "service": "web",
+      "event": "weather.transition",
+      "outcome": "error",
+      "count": 4,
+      "duration": 0.020711
+    },
+    {
+      "service": "web",
+      "event": "weather.transition",
+      "outcome": "success",
+      "count": 66,
+      "duration": 0.3582849999999999
+    }
+  ],
+  "recent": [
+    "d51ff047fe124e5ba35ad9215447bd6f",
+    "b899d1dee31a44a09920ff1aedb67611",
+    "7f8223bde2de4c3cb47577b16e1f6ed0",
+    "7ec3ca154c1942298093419b50c041c0",
+    "4f9fd94895f8453a86912b1830379d4b",
+    "54f4bcb02eb146da84e93fd98670044e",
+    "b2a98c06cee6421286a4a3f2669fd5e6",
+    "ecc3c9eb0dac49b8a5efe60990eb6efe",
+    "9184a6b712c44ecd8a8b2a8e9aece8b5",
+    "85a0a729e1814edb89a780dd4913806f",
+    "047849cf7a884e9abcc65a8456bccd53",
+    "f9b7141fd50a4b88be6902840f6d2278"
+  ]
+}

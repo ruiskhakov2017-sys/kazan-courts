@@ -1,0 +1,62 @@
+[
+  {
+    "event": "weather.transition",
+    "service": "web",
+    "trace_id": "b899d1dee31a44a09920ff1aedb67611",
+    "span_id": "0160f83981d3428d",
+    "parent_span_id": "826fd6c17f534285",
+    "correlation_id": "evidence-e2e8841c4675d153",
+    "started_at": 1795284624.3860483,
+    "duration_ms": 7.832,
+    "outcome": "success",
+    "error_type": ""
+  },
+  {
+    "event": "http.request",
+    "service": "web",
+    "trace_id": "b899d1dee31a44a09920ff1aedb67611",
+    "span_id": "826fd6c17f534285",
+    "parent_span_id": "",
+    "correlation_id": "evidence-e2e8841c4675d153",
+    "started_at": 1795284624.3613281,
+    "duration_ms": 47.943,
+    "outcome": "success",
+    "error_type": ""
+  },
+  {
+    "event": "kafka.publish",
+    "service": "publisher",
+    "trace_id": "b899d1dee31a44a09920ff1aedb67611",
+    "span_id": "f502e739bba94755",
+    "parent_span_id": "0160f83981d3428d",
+    "correlation_id": "evidence-e2e8841c4675d153",
+    "started_at": 1795284628.7736146,
+    "duration_ms": 112.257,
+    "outcome": "success",
+    "error_type": ""
+  },
+  {
+    "event": "notification.persist",
+    "service": "consumer",
+    "trace_id": "b899d1dee31a44a09920ff1aedb67611",
+    "span_id": "eaa09e511ba7476d",
+    "parent_span_id": "750b413212504ce4",
+    "correlation_id": "evidence-e2e8841c4675d153",
+    "started_at": 1795284628.886467,
+    "duration_ms": 29.876,
+    "outcome": "success",
+    "error_type": ""
+  },
+  {
+    "event": "kafka.consume",
+    "service": "consumer",
+    "trace_id": "b899d1dee31a44a09920ff1aedb67611",
+    "span_id": "750b413212504ce4",
+    "parent_span_id": "f502e739bba94755",
+    "correlation_id": "evidence-e2e8841c4675d153",
+    "started_at": 1795284628.8864515,
+    "duration_ms": 52.068,
+    "outcome": "success",
+    "error_type": ""
+  }
+]

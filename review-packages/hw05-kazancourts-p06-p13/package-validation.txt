@@ -1,0 +1,3 @@
+PASS full diff applies to base HEAD
+PASS ZIP CRC, all manifest hashes, private dump/env exclusion
+/workspace/hw05-full-review/KazanCourts_HW005_P06-P13_Review.zip 786789 bytes
